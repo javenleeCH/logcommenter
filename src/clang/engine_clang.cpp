@@ -13,6 +13,7 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/Expr.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Lexer.h"
@@ -209,7 +210,8 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
     if (err) *err = "bad compile db: " + loadErr;
     return false;
   }
-  ClangTool tool(*db, {args.file});
+  std::vector<std::string> sources = {args.file};
+  ClangTool tool(*db, sources);
   EngineFactory factory(args, edits, err);
   int rc = tool.run(&factory);
   std::remove(tmpDb.c_str());

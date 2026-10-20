@@ -46,6 +46,14 @@ if(LOGCOMMENTER_BUILD_AST)
             llvm-config-17 llvm-config-16 llvm-config-15 llvm-config-14
             llvm-config)
     if(NOT LLVM_CONFIG)
+      # 兜底：在常见安装路径（/usr/lib/llvm-*/bin、Homebrew 等）下查找
+      file(GLOB LLVM_CONFIG_CANDIDATES
+        /usr/lib/llvm-*/bin/llvm-config* /usr/local/opt/llvm/bin/llvm-config*)
+      if(LLVM_CONFIG_CANDIDATES)
+        list(GET LLVM_CONFIG_CANDIDATES 0 LLVM_CONFIG)
+      endif()
+    endif()
+    if(NOT LLVM_CONFIG)
       message(FATAL_ERROR "llvm-config not found; set LOGCOMMENTER_BUILD_AST=OFF or install LLVM/Clang")
     endif()
     execute_process(COMMAND ${LLVM_CONFIG} --includedir
