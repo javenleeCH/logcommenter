@@ -1,5 +1,7 @@
 # logcommenter — 日志自动注释器
 
+[![CI](https://github.com/javenleeCH/logcommenter/actions/workflows/ci.yml/badge.svg)](https://github.com/javenleeCH/logcommenter/actions)
+
 基于 **Clang LibTooling**（Clang AST 改写）的源码级日志清理工具：自动查找源码中**含有指定标记字符串的日志语句**，并在其前面插入 `//` 注释掉，用于批量禁用不需要的调试日志。
 
 ## 它解决什么问题
@@ -25,7 +27,7 @@ logcommenter 的做法：
 
 ## 构建
 
-项目用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 自动拉取 `llvm-project` 源码（当前锁定 `llvmorg-21.1.4`）并现场编译 Clang/LLVM 库。
+项目用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 自动拉取 `llvm-project` 源码（当前锁定 `llvmorg-23.1.3`，GIT_SHALLOW 浅克隆）并现场编译 Clang/LLVM 库。
 
 ```bash
 mkdir build && cd build
@@ -33,7 +35,7 @@ cmake ..
 make
 ```
 
-> 注意：首次构建会完整编译 LLVM + Clang，耗时较长。Windows 下可使用仓库内置的 `CMakePresets.json`（VS2022 + Ninja + ccache）预设。
+> 注意：首次构建会完整编译 LLVM + Clang，耗时较长。CI 已配置 ccache 编译缓存，命中后增量秒过。
 
 ## 用法
 
