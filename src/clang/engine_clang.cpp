@@ -250,6 +250,9 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
   {
     std::string rd = findResourceDir(err);
+    std::fprintf(stderr, "[logc] LOGC_LLVM_BIN_DIR=%s\n", LOGC_LLVM_BIN_DIR);
+    std::fprintf(stderr, "[logc] resource-dir resolved: '%s' (diag: %s)\n",
+                 rd.c_str(), (err && !err->empty()) ? err->c_str() : "");
     if (!rd.empty()) {
       tool.appendArgumentsAdjuster(
           [rd](const CommandLineArguments &args, StringRef) {

@@ -49,6 +49,14 @@ jobs:
         run: cmake --build build --target logcommenter_tests -j$(nproc)
       - name: Run unit tests
         run: ctest --test-dir build --output-on-failure
+      - name: Locate builtin headers (diagnostic)
+        run: |
+          echo "== stddef.h =="
+          find build -name stddef.h 2>/dev/null | head -20 || true
+          echo "== clang resource dirs =="
+          find build -type d -path '*/lib/clang/*/include' 2>/dev/null | head -20 || true
+          echo "== compile_commands sample.cpp entry =="
+          python3 -c "import json;d=json.load(open('build/compile_commands.json'));print([e for e in d if 'sample.cpp' in e['file']])"
       - name: E2E smoke (comment + inject)
         run: |
           set -e
