@@ -19,6 +19,7 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/CompilationDatabase.h"
+#include "clang/Tooling/JSONCompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 
 using namespace clang;
@@ -79,7 +80,7 @@ class Observer : public MatchFinder::MatchCallback {
       ObsFormat fmt = formatForType(type, var);
       if (!fmt.streamable) return;  // 对象等交由后续增强处理
       std::string line =
-          "std::cout << \"[obs] " + var + "=\" << " + fmt.expr +
+          "std::cout << \"[obs] \" + " + var + "=\" << " + fmt.expr +
           " << std::endl;";
       SourceLocation end =
           VD->getSourceRange().getEnd().getLocWithOffset(1);
@@ -91,7 +92,7 @@ class Observer : public MatchFinder::MatchCallback {
 class EngineConsumer : public ASTConsumer {
  public:
   EngineConsumer(const CliArgs &args, Collector *c, MatchFinder *mf)
-      : observer_(args, c), mf_(mf) {
+      : args_(args), observer_(args, c), mf_(mf) {
     if (args_.action == Action::kComment) {
       mf_->addMatcher(
           callExpr(hasAnyArgument(stringLiteral().bind("func_log_str")))
