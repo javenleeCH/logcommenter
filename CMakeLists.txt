@@ -106,6 +106,7 @@ if(LOGCOMMENTER_BUILD_AST)
       NAME LLVM_PROJECT
       GITHUB_REPOSITORY llvm/llvm-project
       GIT_TAG llvmorg-23.1.3
+      GIT_SHALLOW TRUE   # 只拿这个 tag 对应的单个 commit，不带历史，大幅减小下载量
       DOWNLOAD_ONLY YES
     )
     set(LLVM_ENABLE_PROJECTS "clang" CACHE STRING "启用 Clang")
