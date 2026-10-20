@@ -104,9 +104,8 @@ if(LOGCOMMENTER_BUILD_AST)
     include(cmake/CPM.cmake)
     CPMAddPackage(
       NAME LLVM_PROJECT
-      GITHUB_REPOSITORY llvm/llvm-project
-      GIT_TAG llvmorg-23.1.3
-      GIT_SHALLOW TRUE   # 只拿这个 tag 对应的单个 commit，不带历史，大幅减小下载量
+      URL https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-23.1.3.zip
+      URL_HASH SHA256=2198f03ae4eb6bc6b71cd2a79c60ea9f9ce6bc6bc3a8dcf9e29861f425236746
       DOWNLOAD_ONLY YES
     )
     set(LLVM_ENABLE_PROJECTS "clang" CACHE STRING "启用 Clang")
