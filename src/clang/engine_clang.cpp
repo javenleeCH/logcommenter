@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <filesystem>
+
 #include "../logengine/compile_index.h"
 #include "../logengine/format_table.h"
 
@@ -183,6 +185,34 @@ std::string writeSingleEntryDb(const std::string &entryJson) {
   return tmp;
 }
 
+// 静态链接的自定义可执行无法从 argv[0] 推导 clang resource dir（内置头所在），
+// 这里在 LLVM 构建目录下探测真实路径：<bin>/lib/clang/<ver>/include/stddef.h。
+// 找不到返回空串，并把诊断信息写入 err。
+std::string findResourceDir(std::string *err) {
+  namespace fs = std::filesystem;
+#ifdef LOGC_LLVM_BIN_DIR
+  fs::path lib(LOGC_LLVM_BIN_DIR);
+  lib /= "lib";
+  lib /= "clang";
+  std::error_code ec;
+  if (fs::exists(lib)) {
+    for (auto &e : fs::directory_iterator(lib, ec)) {
+      if (!e.is_directory(ec)) continue;
+      fs::path inc = e.path() / "include" / "stddef.h";
+      if (fs::exists(inc)) {
+        return e.path().string();  // <bin>/lib/clang/<ver>
+      }
+    }
+    if (err) *err = "no stddef.h under resource dir candidates: " + lib.string();
+  } else if (err) {
+    *err = "resource dir not found: " + lib.string();
+  }
+#else
+  if (err) *err = "LOGC_LLVM_BIN_DIR not defined";
+#endif
+  return "";
+}
+
 }  // namespace
 
 bool runClangEngine(const CliArgs &args, const std::string &compileJson,
@@ -218,14 +248,17 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
 #ifdef LOGC_LLVM_BIN_DIR
   // 静态链接的自定义可执行无法从 argv[0] 推导 resource dir，必须显式指定，
   // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
-  tool.appendArgumentsAdjuster(
-      [](const CommandLineArguments &args, StringRef) {
-        CommandLineArguments out = args;
-        std::string rd = std::string(LOGC_LLVM_BIN_DIR) + "/lib/clang/" +
-                         std::to_string(CLANG_VERSION_MAJOR);
-        out.push_back("-resource-dir=" + rd);
-        return out;
-      });
+  {
+    std::string rd = findResourceDir(err);
+    if (!rd.empty()) {
+      tool.appendArgumentsAdjuster(
+          [rd](const CommandLineArguments &args, StringRef) {
+            CommandLineArguments out = args;
+            out.push_back("-resource-dir=" + rd);
+            return out;
+          });
+    }
+  }
 #endif
   EngineFactory factory(args, edits, err);
   int rc = tool.run(&factory);
