@@ -19,13 +19,14 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang，编译并跑全部单测。
-  # 用 ccache 做编译级缓存：即使某次构建失败，已编译的 LLVM 单元也进 ccache，
-  # 下次增量复用，避免每次 push 都全量重编 LLVM。
+  # 用 ccache 做编译级缓存；Save ccache 用 if: always()，即使 job 失败（如
+  # engine 编译报错）也会把已编译的 LLVM 单元上传，下次增量复用，避免反复全量。
   ast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Cache ccache
+        id: ccache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -38,6 +39,12 @@ jobs:
         run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
       - name: Build full tool
         run: cmake --build build --target logcommenter -j$(nproc)
+      - name: Save ccache even on failure
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
       - name: Build tests
         run: cmake --build build --target logcommenter_tests -j$(nproc)
       - name: Run unit tests
