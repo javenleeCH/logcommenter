@@ -19,7 +19,6 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/CompilationDatabase.h"
-#include "clang/Tooling/JSONCompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 
 using namespace clang;
@@ -205,7 +204,7 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   std::string tmpDb = writeSingleEntryDb(entry);
   std::string loadErr;
   std::unique_ptr<CompilationDatabase> db =
-      JSONCompilationDatabase::loadFromFile(tmpDb, loadErr);
+      CompilationDatabase::loadFromFile(tmpDb, loadErr);
   if (!db) {
     std::remove(tmpDb.c_str());
     if (err) *err = "bad compile db: " + loadErr;
