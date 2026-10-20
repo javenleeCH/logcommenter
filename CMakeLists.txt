@@ -133,6 +133,10 @@ if(LOGCOMMENTER_BUILD_AST)
     target_link_libraries(logcommenter_engine PUBLIC logcommenter_core
       clangTooling clangASTMatchers clangRewrite clangFrontend
       clangSerialization clangAST clangBasic clangLex)
+    # EXCLUDE_FROM_ALL 使 clang 内置头目标（clang-headers）默认不被构建，
+    # 但 LibTooling 运行时依赖它们（resource dir 里的 stddef.h 等）。
+    # 显式依赖，确保 --target logcommenter 时先生成内置头。
+    add_dependencies(logcommenter_engine clang-headers)
   endif()
 
   add_executable(logcommenter src/main.cpp)
