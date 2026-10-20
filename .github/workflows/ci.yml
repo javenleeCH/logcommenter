@@ -26,8 +26,8 @@ jobs:
       - name: Install LLVM / Clang
         run: |
           sudo apt-get update
-          # libclang-common-dev 提供 clang 的 C++ 头文件（clang/AST/*.h）
-          sudo apt-get install -y clang llvm-dev libclang-cpp-dev libclang-common-dev
+          # libclang-common-18-dev 提供 clang 的 C++ 头文件（clang/AST/*.h）
+          sudo apt-get install -y clang llvm-dev libclang-cpp-dev libclang-common-18-dev
           # 确保 llvm-config 可解析；若默认不在 PATH，显式加入
           which llvm-config || (ls /usr/lib/llvm-*/bin/llvm-config* && echo "/usr/lib/llvm-*/bin" >> "$GITHUB_PATH")
       - name: Configure (full)
