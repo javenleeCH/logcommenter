@@ -123,6 +123,9 @@ if(LOGCOMMENTER_BUILD_AST)
     add_subdirectory(${LLVM_PROJECT_SOURCE_DIR}/llvm ${LLVM_PROJECT_BINARY_DIR} EXCLUDE_FROM_ALL)
 
     add_library(logcommenter_engine src/clang/engine_clang.cpp)
+    # 运行时给 ClangTool 指定 resource dir（静态链接无法从 argv[0] 推导）
+    target_compile_definitions(logcommenter_engine PRIVATE
+      LOGC_LLVM_BIN_DIR="${LLVM_PROJECT_BINARY_DIR}")
     target_include_directories(logcommenter_engine PRIVATE
       ${LLVM_PROJECT_SOURCE_DIR}/llvm/include
       ${LLVM_PROJECT_SOURCE_DIR}/clang/include

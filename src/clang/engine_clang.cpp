@@ -15,6 +15,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/Basic/Version.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -80,7 +81,7 @@ class Observer : public MatchFinder::MatchCallback {
       ObsFormat fmt = formatForType(type, var);
       if (!fmt.streamable) return;  // 对象等交由后续增强处理
       std::string line =
-          "std::cout << \"[obs] \" + " + var + "=\" << " + fmt.expr +
+          "std::cout << \"[obs] " + var + "=\" << " + fmt.expr +
           " << std::endl;";
       SourceLocation end =
           VD->getSourceRange().getEnd().getLocWithOffset(1);
@@ -214,6 +215,18 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   }
   std::vector<std::string> sources = {args.file};
   ClangTool tool(*db, sources);
+#ifdef LOGC_LLVM_BIN_DIR
+  // 静态链接的自定义可执行无法从 argv[0] 推导 resource dir，必须显式指定，
+  // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
+  tool.appendArgumentsAdjuster(
+      [](const CommandLineArguments &args, StringRef) {
+        CommandLineArguments out = args;
+        std::string rd = std::string(LOGC_LLVM_BIN_DIR) + "/lib/clang/" +
+                         std::to_string(CLANG_VERSION_MAJOR);
+        out.push_back("-resource-dir=" + rd);
+        return out;
+      });
+#endif
   EngineFactory factory(args, edits, err);
   int rc = tool.run(&factory);
   std::remove(tmpDb.c_str());
