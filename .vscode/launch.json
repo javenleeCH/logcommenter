@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "logcommenter",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/out/build/VS/bin/Debug/logcommenter.exe",
+            "args": [
+                "-p",
+                "${workspaceRoot}/out/build/VS",
+                "D:/CodeSpace/cdir/logcommenter/src/sample.cpp"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}",
+            "environment": [],
+        }
+    ]
+}
