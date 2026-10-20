@@ -260,10 +260,6 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
     }
     std::string headers = src + "/clang/lib/Headers";
     bool hasHeaders = fs::exists(headers);
-    std::fprintf(stderr, "[logc] LOGC_LLVM_BIN_DIR=%s\n", LOGC_LLVM_BIN_DIR);
-    std::fprintf(stderr,
-                 "[logc] resource-dir='%s' builtin-headers='%s' exists=%d\n",
-                 rd.c_str(), headers.c_str(), (int)hasHeaders);
     tool.appendArgumentsAdjuster(
         [rd, headers, hasHeaders](const CommandLineArguments &args, StringRef) {
           CommandLineArguments out = args;
