@@ -29,15 +29,11 @@ jobs:
           # 必须用 LLVM 官方仓库 apt.llvm.org 的 clang 包（自带完整头）。
           wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           sudo bash /tmp/llvm.sh 18
-          sudo apt-get install -y libclang-cpp18-dev
-          echo "=== dpkg clang packages ==="
-          dpkg -l | grep -iE 'clang|llvm' | grep -iE 'dev' | awk '{print $2, $3}'
-          echo "=== clang-18 include files ==="
-          dpkg -L clang-18 2>/dev/null | grep -i include | head -40
-          echo "=== libclang-cpp18-dev include files ==="
-          dpkg -L libclang-cpp18-dev 2>/dev/null | grep -i include | head -40
-          echo "=== llvm-config real target ==="
-          readlink -f /usr/bin/llvm-config-18
+          sudo apt-get install -y libclang-cpp18-dev libclang-common-18-dev
+          echo "=== libclang-common-18-dev clang headers ==="
+          dpkg -L libclang-common-18-dev 2>/dev/null | grep -i 'clang/' | head -30
+          echo "=== ASTConsumer.h ==="
+          find /usr/lib/llvm-18 -name 'ASTConsumer.h' 2>/dev/null
       - name: Configure (full)
         run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DLOGCOMMENTER_SYSTEM_LLVM=ON -DCMAKE_BUILD_TYPE=Release
       - name: Build full tool
