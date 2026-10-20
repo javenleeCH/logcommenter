@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # 纯逻辑核心 + 单测：零 Clang 依赖，快、必绿
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (core only)
+        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=OFF -DCMAKE_BUILD_TYPE=Release
+      - name: Build core tests
+        run: cmake --build build --target logcommenter_tests -j$(nproc)
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  # 完整工具（AST 引擎 + CLI）：用系统 LLVM 编译并跑全部单测
+  ast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM / Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm-dev libclang-cpp-dev
+      - name: Configure (full)
+        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DLOGCOMMENTER_SYSTEM_LLVM=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build full tool
+        run: cmake --build build --target logcommenter -j$(nproc)
+      - name: Build tests
+        run: cmake --build build --target logcommenter_tests -j$(nproc)
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure
