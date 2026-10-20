@@ -18,24 +18,26 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build --output-on-failure
 
-  # 完整工具（AST 引擎 + CLI）：用系统 LLVM 编译并跑全部单测
+  # 完整工具（AST 引擎 + CLI）：系统 LLVM 库 + LLVM 源码头，编译并跑全部单测
   ast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM / Clang (apt.llvm.org)
         run: |
-          # Ubuntu 官方 clang 包不含 LibTooling 头文件（clang/AST/*.h），
-          # 必须用 LLVM 官方仓库 apt.llvm.org 的 clang 包（自带完整头）。
           wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           sudo bash /tmp/llvm.sh 18
-          sudo apt-get install -y libclang-cpp18-dev libclang-common-18-dev
-          echo "=== libclang-common-18-dev clang headers ==="
-          dpkg -L libclang-common-18-dev 2>/dev/null | grep -i 'clang/' | head -30
-          echo "=== ASTConsumer.h ==="
-          find /usr/lib/llvm-18 -name 'ASTConsumer.h' 2>/dev/null
+          # libclang-cpp18-dev 提供 libclang-cpp 库
+          sudo apt-get install -y libclang-cpp18-dev
+      - name: Fetch clang headers from LLVM source
+        run: |
+          # 系统 clang 包不打包 LibTooling 头（clang/AST/*.h），
+          # 浅克隆 llvm-project 只取 include 目录补头，链接用系统 libclang-cpp18 库。
+          git clone --depth 1 --filter=blob:none --sparse \
+            --branch llvmorg-18.1.8 https://github.com/llvm/llvm-project /opt/llvm-src
+          cd /opt/llvm-src && git sparse-checkout set clang/include llvm/include
       - name: Configure (full)
-        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DLOGCOMMENTER_SYSTEM_LLVM=ON -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DLOGCOMMENTER_SYSTEM_LLVM=ON -DLLVM_SRC=/opt/llvm-src -DCMAKE_BUILD_TYPE=Release
       - name: Build full tool
         run: cmake --build build --target logcommenter -j$(nproc)
       - name: Build tests

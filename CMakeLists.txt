@@ -41,6 +41,9 @@ add_test(NAME core_tests COMMAND logcommenter_tests)
 if(LOGCOMMENTER_BUILD_AST)
 
   if(LOGCOMMENTER_SYSTEM_LLVM)
+    # 系统 clang 包通常不打包 LibTooling 头（clang/AST/*.h），这些头只能来自
+    # LLVM 源码树。CI 可用 -DLLVM_SRC=<llvm-project 浅克隆目录> 补齐。
+    set(LLVM_SRC "" CACHE PATH "LLVM/Clang source tree supplying clang headers")
     find_program(LLVM_CONFIG
       NAMES llvm-config-21 llvm-config-20 llvm-config-19 llvm-config-18
             llvm-config-17 llvm-config-16 llvm-config-15 llvm-config-14
@@ -78,6 +81,14 @@ if(LOGCOMMENTER_BUILD_AST)
     endforeach()
     if(NOT CLANG_INC_DIRS AND EXISTS "${LLVM_INC}/clang/AST/ASTConsumer.h")
       list(APPEND CLANG_INC_DIRS "${LLVM_INC}")
+    endif()
+    if(NOT CLANG_INC_DIRS AND LLVM_SRC)
+      if(EXISTS "${LLVM_SRC}/clang/include/clang/AST/ASTConsumer.h")
+        list(APPEND CLANG_INC_DIRS "${LLVM_SRC}/clang/include")
+      endif()
+      if(EXISTS "${LLVM_SRC}/llvm/include/llvm/IR/Module.h")
+        list(APPEND CLANG_INC_DIRS "${LLVM_SRC}/llvm/include")
+      endif()
     endif()
     if(NOT CLANG_INC_DIRS)
       message(FATAL_ERROR "clang C++ headers (clang/AST/ASTConsumer.h) not found; install a clang dev package (e.g. libclang-common-<ver>-dev / clang-<ver>)")
