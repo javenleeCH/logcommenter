@@ -1,5 +1,6 @@
 #include <iostream>
 int main() {
-  std::cout << "log: pengtest running" << std::endl;  // 包含 pengtest，运行 logcommenter 后会被注释掉
-  // log("pengtest done");  // 已带 //，不会重复注释
+  int total = 42;                                 // 供 --inject 观测的局部变量
+  std::cout << "log: pengtest running" << std::endl;  // 注释目标（含 pengtest）
+  return total;
 }
