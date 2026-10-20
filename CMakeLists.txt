@@ -62,6 +62,16 @@ if(LOGCOMMENTER_BUILD_AST)
       OUTPUT_VARIABLE LLVM_LIB OUTPUT_STRIP_TRAILING_WHITESPACE)
     execute_process(COMMAND ${LLVM_CONFIG} --cxxflags
       OUTPUT_VARIABLE LLVM_CXXFLAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(COMMAND ${LLVM_CONFIG} --version
+      OUTPUT_VARIABLE LLVM_CONFIG_VER OUTPUT_STRIP_TRAILING_WHITESPACE)
+    message(STATUS "llvm-config: ${LLVM_CONFIG}")
+    message(STATUS "llvm version: ${LLVM_CONFIG_VER}")
+    message(STATUS "LLVM include dir: ${LLVM_INC}")
+    if(NOT EXISTS "${LLVM_INC}/clang/AST/ASTConsumer.h")
+      message(WARNING "clang headers NOT found under ${LLVM_INC}/clang")
+    else()
+      message(STATUS "clang headers found at ${LLVM_INC}/clang")
+    endif()
 
     add_library(logcommenter_engine src/clang/engine_clang.cpp)
     target_include_directories(logcommenter_engine PRIVATE ${LLVM_INC} src)
