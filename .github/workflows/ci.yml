@@ -23,20 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install LLVM / Clang
+      - name: Install LLVM / Clang (apt.llvm.org)
         run: |
-          sudo apt-get update
-          # clang 头文件（clang/AST/*.h）：libclang-common-18-dev 与 clang-18 均提供
-          sudo apt-get install -y clang llvm-dev libclang-cpp-dev libclang-common-18-dev clang-18
-          # 确保 llvm-config 可解析；若默认不在 PATH，显式加入
-          which llvm-config || (ls /usr/lib/llvm-*/bin/llvm-config* && echo "/usr/lib/llvm-*/bin" >> "$GITHUB_PATH")
-      - name: Locate clang headers
-        run: |
-          for p in clang-18 libclang-common-18-dev libclang-cpp18-dev libclang-cpp-dev llvm-18-dev clang-tools-18; do
-            echo "== $p =="
-            dpkg -L $p 2>/dev/null | grep -i 'ASTConsumer' | head -5
-          done
-          find /usr -name 'ASTConsumer.h' 2>/dev/null | head
+          # Ubuntu 官方 clang 包不含 LibTooling 头文件（clang/AST/*.h），
+          # 必须用 LLVM 官方仓库 apt.llvm.org 的 clang 包（自带完整头）。
+          wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 18
+          sudo apt-get install -y libclang-cpp18-dev
       - name: Configure (full)
         run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DLOGCOMMENTER_SYSTEM_LLVM=ON -DCMAKE_BUILD_TYPE=Release
       - name: Build full tool
