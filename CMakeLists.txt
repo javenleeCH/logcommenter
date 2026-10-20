@@ -118,7 +118,9 @@ if(LOGCOMMENTER_BUILD_AST)
     set(LLVM_ENABLE_RTTI ON CACHE BOOL "Clang AST 需要 RTTI")
     set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "启用调试断言")
     set(CMAKE_BUILD_TYPE Release CACHE STRING "构建类型")
-    add_subdirectory(${LLVM_PROJECT_SOURCE_DIR}/llvm ${LLVM_PROJECT_BINARY_DIR})
+    # EXCLUDE_FROM_ALL：LLVM/Clang 所有 target 不进默认 all 目标，避免 `cmake --build`
+    # 触发全量编译；只有被 logcommenter_engine 依赖的库才会被构建。
+    add_subdirectory(${LLVM_PROJECT_SOURCE_DIR}/llvm ${LLVM_PROJECT_BINARY_DIR} EXCLUDE_FROM_ALL)
 
     add_library(logcommenter_engine src/clang/engine_clang.cpp)
     target_include_directories(logcommenter_engine PRIVATE
