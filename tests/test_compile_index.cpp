@@ -77,3 +77,30 @@ TEST_CASE(index_cache_roundtrip) {
   EXPECT_TRUE(idx2.isStale());
   cleanup(p);
 }
+
+TEST_CASE(index_read_normalized_abs_path) {
+  // compile_commands 里的 file 带 "./" 等非规范化写法，readEntry 传规范绝对路径
+  // 应通过 realpath 兜底命中（不依赖精确字符串匹配）。
+  std::string tmp = "/tmp/logc_norm_src.cpp";
+  {
+    std::ofstream f(tmp);
+    f << "int main() { return 0; }\n";
+  }
+  std::string db = "/tmp/logc_norm_db.json";
+  {
+    std::ofstream f(db);
+    f << "[\n"
+      << "  {\"directory\":\"/tmp\",\"file\":\"/tmp/./logc_norm_src.cpp\","
+      << "\"command\":\"g++ -c logc_norm_src.cpp\"}\n"
+      << "]\n";
+  }
+  CompileIndex idx;
+  std::string err;
+  EXPECT_TRUE(idx.build(db, &err));
+  // 规范绝对路径与索引键（带 ./）字符串不同，但 realpath 归一后相同
+  std::string entry;
+  EXPECT_TRUE(idx.readEntry("/tmp/logc_norm_src.cpp", &entry));
+  EXPECT_CONTAINS(entry, "logc_norm_src.cpp");
+  std::remove(tmp.c_str());
+  std::remove(db.c_str());
+}

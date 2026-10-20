@@ -8,6 +8,13 @@
 #include <fstream>
 #include <vector>
 
+#ifdef _WIN32
+#include <stdlib.h>  // _fullpath
+#else
+#include <limits.h>  // PATH_MAX
+#include <stdlib.h>  // realpath
+#endif
+
 namespace logc {
 
 namespace {
@@ -133,6 +140,19 @@ bool readFileBytes(const std::string &path, std::string *data,
   return f.good();
 }
 
+// 把路径解析为绝对路径（基于当前工作目录），失败返回空串。
+// 用于把用户传入的相对路径与 compile_commands 中的绝对路径对齐。
+std::string absolutePath(const std::string &p) {
+#ifdef _WIN32
+  char buf[_MAX_PATH];
+  if (_fullpath(buf, p.c_str(), _MAX_PATH)) return std::string(buf);
+#else
+  char buf[PATH_MAX];
+  if (realpath(p.c_str(), buf)) return std::string(buf);
+#endif
+  return "";
+}
+
 }  // namespace
 
 bool CompileIndex::build(const std::string &jsonPath, std::string *err) {
@@ -164,7 +184,28 @@ bool CompileIndex::locate(const std::string &file, size_t *offset,
 bool CompileIndex::readEntry(const std::string &file,
                              std::string *entryJson) const {
   size_t off, len;
-  if (!locate(file, &off, &len)) return false;
+  if (locate(file, &off, &len)) {
+    return readAt(off, len, entryJson);
+  }
+  // 兜底：compile_commands 里通常是绝对路径，用户可能传相对路径。
+  // 先试"相对→绝对"直接定位，再遍历索引比较规范化后的绝对路径。
+  std::string abs = absolutePath(file);
+  if (!abs.empty() && abs != file && locate(abs, &off, &len)) {
+    return readAt(off, len, entryJson);
+  }
+  if (!abs.empty()) {
+    for (auto &kv : idx_) {
+      std::string kabs = absolutePath(kv.first);
+      if (!kabs.empty() && kabs == abs) {
+        return readAt(kv.second.first, kv.second.second, entryJson);
+      }
+    }
+  }
+  return false;
+}
+
+bool CompileIndex::readAt(size_t off, size_t len,
+                          std::string *entryJson) const {
   std::ifstream f(jsonPath_, std::ios::binary);
   if (!f) return false;
   f.seekg(static_cast<std::streamoff>(off));

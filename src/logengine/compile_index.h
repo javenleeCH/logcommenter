@@ -18,7 +18,8 @@ class CompileIndex {
   bool locate(const std::string &file, size_t *offset,
               size_t *length) const;
 
-  // 读取该文件的原始条目 JSON 文本（seek+read，不加载全量文件）
+  // 读取该文件的原始条目 JSON 文本（seek+read，不加载全量文件）。
+  // file 可为相对路径：未精确命中时按绝对路径解析兜底匹配。
   bool readEntry(const std::string &file, std::string *entryJson) const;
 
   // 持久化索引到 cachePath（JSON lines），供下次直接加载，避免重扫 1GB
@@ -37,6 +38,8 @@ class CompileIndex {
   std::time_t sourceMtime() const;
 
  private:
+  // 按已知 (offset,length) seek+read 单条条目
+  bool readAt(size_t offset, size_t length, std::string *entryJson) const;
   std::string jsonPath_;
   std::map<std::string, std::pair<size_t, size_t>> idx_;
   std::time_t mtime_ = 0;
