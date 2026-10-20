@@ -68,6 +68,11 @@ TEST_CASE(index_cache_roundtrip) {
   size_t off = 0, len = 0;
   EXPECT_TRUE(idx2.locate("lib/other.cpp", &off, &len));
   EXPECT_FALSE(idx2.isStale());
+  // 缓存读取后 readEntry 必须返回与 build 一致的原始条目（数字字段 o/l 不能丢）
+  std::string e2;
+  EXPECT_TRUE(idx2.readEntry("src/bar.cpp", &e2));
+  EXPECT_CONTAINS(e2, "-DDEBUG");
+  EXPECT_CONTAINS(e2, "src/bar.cpp");
 
   // 改动原文件后应判定过期（mtime 秒级粒度，先等待跨过当前秒）
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));

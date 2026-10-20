@@ -262,11 +262,21 @@ bool CompileIndex::loadCache(const std::string &cachePath,
       return s;
     };
     std::string file = val("f");
-    std::string o = val("o"), l = val("l");
-    if (file.empty()) continue;
-    size_t off = static_cast<size_t>(std::strtoull(o.c_str(), nullptr, 10));
-    size_t len = static_cast<size_t>(std::strtoull(l.c_str(), nullptr, 10));
-    idx_[file] = {off, len};
+    // o/l 是数字字段（"o":123），不能用字符串解析，直接从 `"key":` 后读整数
+    auto num = [&](const std::string &key) -> long long {
+      size_t k = line.find("\"" + key + "\":");
+      if (k == std::string::npos) return -1;
+      size_t v = k + key.size() + 3;
+      while (v < line.size() &&
+             (line[v] == ' ' || line[v] == '\t' || line[v] == '\r')) {
+        ++v;
+      }
+      if (v >= line.size()) return -1;
+      return std::strtoll(line.c_str() + v, nullptr, 10);
+    };
+    long long o = num("o"), l = num("l");
+    if (file.empty() || o < 0 || l < 0) continue;
+    idx_[file] = {static_cast<size_t>(o), static_cast<size_t>(l)};
   }
   jsonPath_ = jsonPath;
   struct stat st;
