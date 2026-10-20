@@ -32,9 +32,11 @@ jobs:
           which llvm-config || (ls /usr/lib/llvm-*/bin/llvm-config* && echo "/usr/lib/llvm-*/bin" >> "$GITHUB_PATH")
       - name: Locate clang headers
         run: |
-          dpkg -L clang-18 2>/dev/null | grep -iE 'ASTConsumer|include/clang' | head -20
+          for p in clang-18 libclang-common-18-dev libclang-cpp18-dev libclang-cpp-dev llvm-18-dev clang-tools-18; do
+            echo "== $p =="
+            dpkg -L $p 2>/dev/null | grep -i 'ASTConsumer' | head -5
+          done
           find /usr -name 'ASTConsumer.h' 2>/dev/null | head
-          ls -la /usr/lib/llvm-18/include/ 2>/dev/null | head -30
       - name: Configure (full)
         run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DLOGCOMMENTER_SYSTEM_LLVM=ON -DCMAKE_BUILD_TYPE=Release
       - name: Build full tool
