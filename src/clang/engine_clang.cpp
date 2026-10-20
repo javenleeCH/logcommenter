@@ -249,18 +249,31 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   // 静态链接的自定义可执行无法从 argv[0] 推导 resource dir，必须显式指定，
   // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
   {
+    namespace fs = std::filesystem;
     std::string rd = findResourceDir(err);
-    std::fprintf(stderr, "[logc] LOGC_LLVM_BIN_DIR=%s\n", LOGC_LLVM_BIN_DIR);
-    std::fprintf(stderr, "[logc] resource-dir resolved: '%s' (diag: %s)\n",
-                 rd.c_str(), (err && !err->empty()) ? err->c_str() : "");
-    if (!rd.empty()) {
-      tool.appendArgumentsAdjuster(
-          [rd](const CommandLineArguments &args, StringRef) {
-            CommandLineArguments out = args;
-            out.push_back("-resource-dir=" + rd);
-            return out;
-          });
+    // clang 内置头源码目录（_deps/llvm_project-src/clang/lib/Headers）。
+    // clang-headers 可能没把内置头复制到 build 的 resource dir，这里直接从
+    // 源码树 -isystem 兜底（find 确认该目录存在）。
+    std::string src = LOGC_LLVM_BIN_DIR;
+    if (src.size() >= 6 && src.compare(src.size() - 6, 6, "-build") == 0) {
+      src = src.substr(0, src.size() - 6) + "-src";
     }
+    std::string headers = src + "/clang/lib/Headers";
+    bool hasHeaders = fs::exists(headers);
+    std::fprintf(stderr, "[logc] LOGC_LLVM_BIN_DIR=%s\n", LOGC_LLVM_BIN_DIR);
+    std::fprintf(stderr,
+                 "[logc] resource-dir='%s' builtin-headers='%s' exists=%d\n",
+                 rd.c_str(), headers.c_str(), (int)hasHeaders);
+    tool.appendArgumentsAdjuster(
+        [rd, headers, hasHeaders](const CommandLineArguments &args, StringRef) {
+          CommandLineArguments out = args;
+          if (!rd.empty()) out.push_back("-resource-dir=" + rd);
+          if (hasHeaders) {
+            out.push_back("-isystem");
+            out.push_back(headers);
+          }
+          return out;
+        });
   }
 #endif
   EngineFactory factory(args, edits, err);
