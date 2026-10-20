@@ -51,12 +51,14 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Locate builtin headers (diagnostic)
         run: |
-          echo "== stddef.h =="
-          find build -name stddef.h 2>/dev/null | head -20 || true
-          echo "== clang resource dirs =="
-          find build -type d -path '*/lib/clang/*/include' 2>/dev/null | head -20 || true
-          echo "== compile_commands sample.cpp entry =="
-          python3 -c "import json;d=json.load(open('build/compile_commands.json'));print([e for e in d if 'sample.cpp' in e['file']])"
+          echo "== find stddef.h whole workspace =="
+          find /home/runner/work/logcommenter -name stddef.h 2>/dev/null | head -20 || true
+          echo "== _deps lib tree =="
+          ls -R build/_deps/llvm_project-build/lib 2>/dev/null | head -60 || true
+          echo "== any lib/clang dirs =="
+          find /home/runner/work/logcommenter -type d -path '*/lib/clang*' 2>/dev/null | head -20 || true
+          echo "== any clang include dir with builtin headers =="
+          find /home/runner/work/logcommenter -type d -name include -path '*clang*' 2>/dev/null | head -20 || true
       - name: E2E smoke (comment + inject)
         run: |
           set -e
