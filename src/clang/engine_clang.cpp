@@ -305,6 +305,7 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
                 "[logc] resource-dir=%s clang=%s stddef=%s lib/clang=[%s]\n",
                 rd.c_str(), v.c_str(), fs::exists(hdr, ec) ? "yes" : "no",
                 dirs.c_str());
+            out.push_back("-v");  // 打印 clang 实际 include 搜索路径（builtin + GCC）
           }
           return out;
         });
