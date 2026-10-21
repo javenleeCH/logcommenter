@@ -39,9 +39,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Cache ccache
-        # 仅 Linux 启用：ccache 作为 MSVC launcher 在 Windows+Ninja 下不稳定
-        # （llvm-tblgen 运行时报入口点找不到 0xC0000139），Windows 改为每次冷编。
-        if: runner.os != 'Windows'
         uses: actions/cache@v4
         with:
           path: ${{ matrix.cache_path }}
@@ -63,12 +60,13 @@ jobs:
         run: ${{ matrix.install }}
 
       - name: Configure
-        # Linux: Ninja + ccache（有 [N/M] 计数且稳定）
-        # Windows: 退回 VS generator——Ninja+MSVC 链接出的 llvm-min-tblgen.exe 运行报
-        #   0xC0000139（入口点找不到），经排查与 ccache 无关，是 Ninja+MSVC 本身问题。
+        # 已验证组合：
+        #  - Linux:  Ninja + ccache（[N/M] 计数，稳定）
+        #  - Windows: 默认 VS generator + ccache（39537115952 用此组合构建成功；
+        #     Ninja+MSVC 链接出的 llvm-min-tblgen.exe 运行报 0xC0000139，弃用）
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release
+            cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           else
             cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           fi
