@@ -70,6 +70,7 @@ jobs:
           CCACHE_FLAG=""
           if [ "$RUNNER_OS" != "Windows" ]; then CCACHE_FLAG="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"; fi
           cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release $CCACHE_FLAG
+        shell: bash
 
       - name: Build logcommenter
         # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
