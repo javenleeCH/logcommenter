@@ -1,7 +1,6 @@
-# 发布工作流：三平台（Linux / Windows / macOS）现场编译 LLVM 23 静态链接，
-# 构建 logcommenter 可执行文件并打成带平台前缀的 zip，附加到指定 release tag。
-# 三平台均启用 ccache（ccache 4.x 支持 MSVC）+ 缓存 CPM 解压后的 LLVM 源码，
-# 冷编一次后后续 release 几乎全命中（免下载 + 免重编译）。
+# 发布工作流：Linux / Windows 现场编译 LLVM 23 静态链接，构建 logcommenter 可执行文件
+# 并打成带平台前缀的 zip，附加到指定 release tag。
+# 启用 ccache + 缓存 CPM 解压后的 LLVM 源码，冷编一次后后续 release 几乎全命中。
 # 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
 name: release
 
@@ -20,6 +19,7 @@ jobs:
     name: build (${{ matrix.os }})
     strategy:
       fail-fast: false
+      # 注：macOS 暂不支持（现场编译 LLVM 冷编过久），后续加回即可补一行 include。
       matrix:
         include:
           - os: ubuntu-latest
@@ -32,11 +32,6 @@ jobs:
             exe: build/Release/logcommenter.exe
             cache_path: C:\Users\runneradmin\AppData\Local\ccache
             install: choco install ccache -y
-          - os: macos-latest
-            artifact: logcommenter-macos-arm64
-            exe: build/logcommenter
-            cache_path: /Users/runner/.cache/ccache
-            install: brew install ccache
     runs-on: ${{ matrix.os }}
     env:
       CCACHE_DIR: ${{ matrix.cache_path }}
@@ -64,7 +59,7 @@ jobs:
         run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build logcommenter
-        # Windows 上 --parallel 限制并行度避免 OOM；Linux/macOS 用 nproc
+        # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             cmake --build build --target logcommenter --config Release --parallel 2

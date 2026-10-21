@@ -73,7 +73,7 @@ src/
 
 ## 构建
 
-依赖 **LLVM/Clang 23.1.3**。默认用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 拉取 `llvm-project` 源码并现场静态编译（Linux / Windows / macOS 均可，CI 已全绿）。
+依赖 **LLVM/Clang 23.1.3**。默认用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 拉取 `llvm-project` 源码并现场静态编译（Linux / Windows 均可，CI 已全绿）。
 
 ```bash
 # 纯逻辑 core（无 Clang 依赖，快，必绿）
@@ -107,7 +107,9 @@ cmake --build build --target logcommenter -j$(nproc)
 
 ## Release
 
-发布流程见 `.github/workflows/release.yml`：三平台（Linux x64 / Windows x64 / macOS arm64）现场编译 LLVM 静态链接，产出可执行文件并附加到 release tag。`--inject --position` 等最新能力以 release 二进制为准。
+发布流程见 `.github/workflows/release.yml`：**Linux x64 / Windows x64** 现场编译 LLVM 静态链接，产出带平台前缀的 zip 并附加到 release tag。`--inject --position` 等最新能力以 release 二进制为准。
+
+> macOS 暂不支持（现场编译 LLVM 冷编耗时过长），后续需要时可在 release.yml 补一行 matrix 加回。
 
 ## 演进方向
 
