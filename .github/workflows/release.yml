@@ -43,14 +43,18 @@ jobs:
         with:
           path: ${{ matrix.cache_path }}
           key: ccache-release-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt', 'cmake/CPM.cmake') }}
+          # 配置微调时 key 对不上主缓存，restore-keys 恢复最近缓存，只重编受影响对象
+          restore-keys: |
+            ccache-release-${{ matrix.os }}-
 
       # CPM 检测到 _deps/llvm_project-src 已存在则跳过下载/解压。
       # 缓存解压后的源码目录，避免每次 release 重复下载 1.4GB LLVM 源码。
+      # key 固定按 LLVM 版本（下载与否只取决于版本，与 CMakeLists 内容无关），升级 LLVM 时手动改。
       - name: Cache LLVM source (CPM)
         uses: actions/cache@v4
         with:
           path: build/_deps/llvm_project-src
-          key: llvm-src-${{ matrix.os }}-23.1.3-${{ hashFiles('CMakeLists.txt') }}
+          key: llvm-src-${{ matrix.os }}-23.1.3
 
       - name: Install ccache
         run: ${{ matrix.install }}
