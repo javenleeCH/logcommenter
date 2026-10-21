@@ -14,6 +14,19 @@
   `--inject --var cfg`，compile-commands 用 `out/build/ninja/compile_commands.json`。
 - 只改 `logengine`（纯逻辑）时用 `-DLOGCOMMENTER_BUILD_AST=OFF` 可跳过 LLVM。
 
+## 产品与技术约束（源自 docs/PRODUCT_TECH_PLAN.md，改动不得违背）
+
+- 分层：VSCode 插件薄壳（选区/右键/applyEdit）→ 短生命周期 CLI（起→解析→返回→退出）
+  → LogEngine。不 fork clangd、不常驻进程、不与 clangd 抢内存。
+- CLI 只输出 1-based JSON TextEdit、**不回写文件**；落地与否由调用方 applyEdit 决定。
+- compile_commands 用偏移索引（`.logc-idx`）seek+read 单条取参，绝不整载 1GB；
+  索引按 mtime 失效。
+- 幂等（产品要求）：`--comment` 天然跳过已注释语句；`--inject` 不得重复注入——
+  单次调用内已按 canonical decl 去重；跨调用检测已有 `[obs]` 行**尚未实现**，属产品待办。
+- 对象观测优先级：有 `operator<<` 直接流式；用户可改类走 friend 注入（需用户显式确认，
+  改头文件有副作用）；第三方/系统类型回退地址打印。
+- 方案文档中 "LLVM 21.1.4" 已过时：仓库现用 LLVM/Clang 23.1.3（CPM 现场编译）。
+
 ## clang resource-dir（核心坑，曾造成连续十余次 CI 失败）
 
 - `-resource-dir` 必须指向**直接包含 `include/` 的版本目录**（标准布局 `lib/clang/<ver>`），
