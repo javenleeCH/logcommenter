@@ -11,6 +11,7 @@
 
 #include "../logengine/compile_index.h"
 #include "../logengine/format_table.h"
+#include "../logengine/args.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
@@ -297,8 +298,16 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
     std::string headers = src + "/clang/lib/Headers";
     bool hasHeaders = fs::exists(headers);
     tool.appendArgumentsAdjuster(
-        [rd, headers, hasHeaders](const CommandLineArguments &args, StringRef) {
-          CommandLineArguments out = args;
+        [rd, headers, hasHeaders](const CommandLineArguments &args,
+                                  StringRef filename) {
+          // MSVC(CMake) compile_commands 的 command 常自带源文件路径 + /Fo 输出参数，
+          // ClangTool 又会注入 --file 的源文件，导致"多个输入 + /Fo 单输出"冲突
+          // （cannot specify '/Fo' when compiling multiple source files）。
+          // 剥离 command 中与当前源文件重复的 token，只留编译选项。
+          std::vector<std::string> vec(args.begin(), args.end());
+          std::string cur(filename.data(), filename.size());
+          auto cleaned = stripSourceFileArg(vec, cur);
+          CommandLineArguments out(cleaned.begin(), cleaned.end());
           if (!rd.empty()) out.push_back("-resource-dir=" + rd);
           if (hasHeaders) {
             out.push_back("-isystem");

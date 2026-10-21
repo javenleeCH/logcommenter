@@ -61,3 +61,35 @@ TEST_CASE(parse_position_invalid) {
   EXPECT_FALSE(parsePosition("5", &l, &c));
   EXPECT_FALSE(parsePosition("0:1", &l, &c));
 }
+
+TEST_CASE(args_strip_duplicate_source) {
+  // MSVC(CMake) compile_commands：command 自带源文件路径 + /Fo 输出参数。
+  // 用户传正斜杠绝对路径 --file，command 里是反斜杠绝对路径 → 应剥离重复源文件 token，
+  // 保留 /Fo 与其余编译选项。
+  std::vector<std::string> in = {
+      "cl.exe",
+      "/nologo",
+      "/c",
+      "/FoCMakeFiles\\sample.dir\\src\\sample.cpp.obj",
+      "/Iinc",
+      "D:\\codeSpace\\CDir\\vkdemo\\src\\main.cpp"};
+  auto out = stripSourceFileArg(in, "D:/codeSpace/CDir/vkdemo/src/main.cpp");
+  // 源文件 token 已剥离：任何参数不应再以 main.cpp 结尾
+  for (auto &s : out)
+    EXPECT_FALSE(s.size() >= 8 && s.compare(s.size() - 8, 8, "main.cpp") == 0);
+  bool hasFo = false, hasInc = false;
+  for (auto &s : out) {
+    if (s.rfind("/Fo", 0) == 0) hasFo = true;
+    if (s == "/Iinc") hasInc = true;
+  }
+  EXPECT_TRUE(hasFo);
+  EXPECT_TRUE(hasInc);
+  // 剩 cl.exe /nologo /c /Fo... /Iinc = 5 项
+  EXPECT_EQ(static_cast<int>(out.size()), 5);
+  // 相对路径 --file（.\\src\\main.cpp）也应按文件名剥离
+  auto out2 = stripSourceFileArg(in, ".\\src\\main.cpp");
+  EXPECT_EQ(static_cast<int>(out2.size()), 5);
+  // 无重复源文件的纯编译选项应原样保留
+  auto out3 = stripSourceFileArg({"g++", "-c", "-Iinc"}, "x.cpp");
+  EXPECT_EQ(static_cast<int>(out3.size()), 3);
+}
