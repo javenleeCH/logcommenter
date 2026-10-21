@@ -46,8 +46,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ matrix.cache_path }}
-          key: ccache-release-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt', 'cmake/CPM.cmake') }}
-          # 配置微调时 key 对不上主缓存，restore-keys 恢复最近缓存，只重编受影响对象
+          # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
+          # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
+          key: ccache-release-${{ matrix.os }}-llvm-23.1.3
+          # restore-keys 只在极端情况下兜底恢复，平时 key 固定即可命中主缓存
           restore-keys: |
             ccache-release-${{ matrix.os }}-
 
