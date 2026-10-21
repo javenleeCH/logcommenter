@@ -101,7 +101,8 @@ jobs:
           cp -r build/_deps/llvm_project-src/clang/lib/Headers/* package/clang-headers/ 2>/dev/null || true
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp build/logcommenter.exe package/logcommenter.exe
-            powershell -Command "Compress-Archive -Path (Get-ChildItem -Path 'package') -DestinationPath ${{ matrix.artifact }}.zip -Force"
+            # 在 package 内压缩，路径展平到 zip 根；单引号防 bash 展开 * / \（由 PowerShell 处理）
+            powershell -Command 'Set-Location package; Compress-Archive -Path * -DestinationPath ..\${{ matrix.artifact }}.zip -Force'
           else
             cp build/logcommenter package/logcommenter
             (cd package && zip -r ../${{ matrix.artifact }}.zip .)
