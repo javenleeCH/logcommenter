@@ -109,3 +109,25 @@ TEST_CASE(index_read_normalized_abs_path) {
   std::remove(tmp.c_str());
   std::remove(db.c_str());
 }
+
+TEST_CASE(index_read_slash_normalize_windows_path) {
+  // Windows 场景：compile_commands 存反斜杠绝对路径，用户传正斜杠绝对路径。
+  // 应通过斜杠归一直接字符串匹配命中（不依赖 realpath，路径在 Linux 上不存在也没关系）。
+  std::string db = "/tmp/logc_win_db.json";
+  {
+    std::ofstream f(db);
+    f << "[\n"
+      << "  {\"directory\":\"D:\\\\codeSpace\\\\CDir\\\\vkdemo\","
+      << "\"file\":\"D:\\\\codeSpace\\\\CDir\\\\vkdemo\\\\src\\\\main.cpp\","
+      << "\"command\":\"cl /c src\\\\main.cpp\"}\n"
+      << "]\n";
+  }
+  CompileIndex idx;
+  std::string err;
+  EXPECT_TRUE(idx.build(db, &err));
+  std::string entry;
+  // 正斜杠绝对路径 → 应命中反斜杠存储的键
+  EXPECT_TRUE(idx.readEntry("D:/codeSpace/CDir/vkdemo/src/main.cpp", &entry));
+  EXPECT_CONTAINS(entry, "main.cpp");
+  std::remove(db.c_str());
+}

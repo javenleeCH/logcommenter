@@ -47,12 +47,12 @@ size_t findForwardBalanced(const std::string &data, size_t start) {
         esc = false;
       } else if (c == '\\') {
         esc = true;
-      } else if (c == '\"') {
+      } else if (c == '"') {
         in_str = false;
       }
       continue;
     }
-    if (c == '\"') {
+    if (c == '"') {
       in_str = true;
     } else if (c == '{') {
       ++depth;
@@ -87,7 +87,7 @@ std::vector<FileEntry> scanEntries(const std::string &data) {
                      data[j] == '\r' || data[j] == '\n')) {
       ++j;
     }
-    if (j >= n || data[j] != '\"') {
+    if (j >= n || data[j] != '"') {
       i = hit + 6;
       continue;
     }
@@ -102,7 +102,7 @@ std::vector<FileEntry> scanEntries(const std::string &data) {
         esc = false;
       } else if (c == '\\') {
         esc = true;
-      } else if (c == '\"') {
+      } else if (c == '"') {
         break;
       } else {
         path += c;
@@ -199,6 +199,20 @@ bool CompileIndex::readEntry(const std::string &file,
   if (locate(file, &off, &len)) {
     return readAt(off, len, entryJson);
   }
+  // 斜杠归一后直接比较：覆盖 "用户传正斜杠 vs compile_commands 存反斜杠" 的纯字符串
+  // 差异，且不依赖文件系统存在性（_fullpath/realpath 可能受 cwd/存在性影响）。
+  std::string nfile = normalizeSlashes(file);
+  if (nfile != file) {
+    auto it = idx_.find(nfile);
+    if (it != idx_.end()) {
+      return readAt(it->second.first, it->second.second, entryJson);
+    }
+  }
+  for (auto &kv : idx_) {
+    if (normalizeSlashes(kv.first) == nfile) {
+      return readAt(kv.second.first, kv.second.second, entryJson);
+    }
+  }
   // 兜底：compile_commands 里通常是绝对路径，用户可能传相对路径。
   // 先试"相对→绝对"直接定位，再遍历索引比较规范化后的绝对路径。
   std::string abs = absolutePath(file);
@@ -247,7 +261,7 @@ bool CompileIndex::loadCache(const std::string &cachePath,
     auto val = [&](const std::string &key) -> std::string {
       size_t k = line.find("\"" + key + "\":");
       if (k == std::string::npos) return "";
-      size_t v = line.find('\"', k + key.size() + 3);
+      size_t v = line.find('"', k + key.size() + 3);
       if (v == std::string::npos) return "";
       ++v;
       std::string s;
@@ -258,13 +272,13 @@ bool CompileIndex::loadCache(const std::string &cachePath,
           if (c == 'n') s += '\n';
           else if (c == 't') s += '\t';
           else if (c == 'r') s += '\r';
-          else if (c == '\"') s += '\"';
+          else if (c == '"') s += '"';
           else if (c == '\\') s += '\\';
           else s += c;
           esc = false;
         } else if (c == '\\') {
           esc = true;
-        } else if (c == '\"') {
+        } else if (c == '"') {
           return s;
         } else {
           s += c;
