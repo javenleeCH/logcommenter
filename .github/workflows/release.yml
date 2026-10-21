@@ -1,5 +1,6 @@
 # 发布工作流：三平台（Linux / Windows / macOS）现场编译 LLVM 23 静态链接，
 # 构建 logcommenter 可执行文件，并附加到指定 release tag。
+# 三平台均启用 ccache（ccache 4.x 支持 MSVC），冷编一次后后续 release 增量构建。
 # 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
 name: release
 
@@ -23,36 +24,35 @@ jobs:
           - os: ubuntu-latest
             artifact: logcommenter-linux-x86_64
             exe: build/logcommenter
+            cache_path: ~/.cache/ccache
+            install: sudo apt-get update && sudo apt-get install -y ccache
           - os: windows-latest
             artifact: logcommenter-windows-x86_64
             exe: build/Release/logcommenter.exe
+            cache_path: C:\Users\runneradmin\AppData\Local\ccache
+            install: choco install ccache -y
           - os: macos-latest
             artifact: logcommenter-macos-arm64
             exe: build/logcommenter
+            cache_path: /Users/runner/.cache/ccache
+            install: brew install ccache
     runs-on: ${{ matrix.os }}
+    env:
+      CCACHE_DIR: ${{ matrix.cache_path }}
     steps:
       - uses: actions/checkout@v4
 
-      # 仅 Linux/macOS 用 ccache 做编译缓存；Windows 冷编 LLVM（无 ccache）
       - name: Cache ccache
-        if: runner.os != 'Windows'
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/ccache
-            /Users/runner/.cache/ccache
+          path: ${{ matrix.cache_path }}
           key: ccache-release-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt', 'cmake/CPM.cmake') }}
 
-      - name: Install ccache (linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ccache
-
-      - name: Install ccache (macos)
-        if: runner.os == 'macOS'
-        run: brew install ccache
+      - name: Install ccache
+        run: ${{ matrix.install }}
 
       - name: Configure
-        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build logcommenter
         # Windows 上 --parallel 限制并行度避免 OOM；Linux/macOS 用 nproc
