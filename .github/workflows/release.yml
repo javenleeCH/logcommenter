@@ -4,6 +4,10 @@
 # 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
 name: release
 
+# 上传 release 资产需要 contents: write（workflow_dispatch 默认未开，否则 gh release upload 报 403）
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
