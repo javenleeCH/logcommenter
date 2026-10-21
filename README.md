@@ -1,82 +1,116 @@
-# logcommenter — 日志自动注释器
+# logcommenter
 
-[![CI](https://github.com/javenleeCH/logcommenter/actions/workflows/ci.yml/badge.svg)](https://github.com/javenleeCH/logcommenter/actions)
+基于 **Clang / LibTooling** 的 C++ 源码日志工具：既能**一键注释**带标记（`pengtest`）的日志语句，也能对**选中变量注入类型感知的观测日志**。CLI 输出 **1-based JSON TextEdit**，天然对接 VSCode 插件做源码改写。
 
-基于 **Clang LibTooling**（Clang AST 改写）的源码级日志清理工具：自动查找源码中**含有指定标记字符串的日志语句**，并在其前面插入 `//` 注释掉，用于批量禁用不需要的调试日志。
+![CI](https://github.com/javenleeCH/logcommenter/workflows/CI/badge.svg)
+[![Release](https://img.shields.io/github/v/release/javenleeCH/logcommenter)](https://github.com/javenleeCH/logcommenter/releases)
 
 ## 它解决什么问题
 
-开发时经常临时往代码里加日志（`std::cout << "..."`、自定义的 `log(...)` 调用），上线或演示前想批量禁用。逐个手删慢、容易漏，删了再调试还得补回来。
+开发时经常临时加日志，上线前要批量清掉；排查时又想在某个变量/某一行就地加观测日志、看完再撤。logcommenter 把这两件事做成可逆的、语义感知的源码改写：
 
-logcommenter 的做法：
+1. **`--comment`**：把源码中带 `pengtest` 标记的日志语句（函数调用 + `cout/cerr/clog` 流）自动注释掉——是注释不是删除，可逆。
+2. **`--inject`**：对选中变量注入一行观测日志，自动生成类型感知的打印表达式。
 
-1. 在要清理的日志里放一个**私有标记字符串**（默认 `pengtest`）；
-2. 跑一次工具，把所有含该标记的日志语句**自动注释掉**；
-3. 需要恢复时撤掉注释即可——用的是注释而非删除，操作可逆。
+关键设计：**CLI 只做纯分析、输出 JSON TextEdit，不回写文件**。要不要落地由调用方（VSCode 插件薄壳 / 脚本）用 `applyEdit` 决定——分析工具与编辑器解耦。
 
-## 工作原理
+## 最新 CLI
 
-基于 Clang LibTooling 的 `MatchFinder` + `Rewriter`：
+```
+用法:
+  logcommenter --inject --file <path> --var <name> [--position line:col]
+      --compile-commands <compile_commands.json>
+  logcommenter --inject --file <path> --position <line:col>
+      --compile-commands <compile_commands.json>
+  logcommenter --comment --file <path>
+      --compile-commands <compile_commands.json>
 
-- 匹配器命中两类节点：
-  - **函数调用**：参数中含字符串字面量且命中标记，如 `log("pengtest ...")`；
-  - **流式输出**：`cout / cerr / clog` 上的 `operator<<` 且命中标记，如 `std::cout << "pengtest ..."`；
-- `Rewriter` 在命中语句前插入 `// `，把该日志静音；
-- 已注释的语句、系统头文件内的命中会自动跳过，不会重复注释；
-- 通过 `ASTFrontendAction` 处理完所有源文件后，原地写回改动。
+选项:
+  --inject / --comment        动作：注入观测日志 / 注释标记(pengtest)日志
+  --file PATH                 待处理源文件
+  --var NAME                  注入：按变量名定位观测对象
+  --position LINE:COL         注入：按光标位置定位（1-based，命中声明处或引用处）
+  --compile-commands PATH     compile_commands.json 路径
+  --help / -h                 帮助
+```
+
+`--inject` 用 **`--var`（按名字）** 或 **`--position`（按光标位置）** 二选一定位。输出示例：
+
+```json
+{ "file": "src/sample.cpp",
+  "edits": [ { "range": { "start": {"line":4,"col":8}, "end": {"line":4,"col":8} },
+               "text": "\n    std::cout << \"[obs] total=\" << total << std::endl;" } ] }
+```
+
+### 观测能力
+
+- **基本类型**（`int/float/double/bool/char*/std::string/指针` 等）：直接 `<<` 打印值。
+- **对象 / 复杂类型**（不可直接 `<<`）：自动兜底打印地址 `(const void*)&var`，保证有观测输出。
+- **`--position` 命中声明处或引用处**：光标落在变量 token 上即可，不必输入名字——VSCode 右键"加观测日志"的核心场景。
+
+## 架构
+
+```
+src/
+├── logengine/              # 纯逻辑层，零 Clang 依赖，本机可编译单测
+│   ├── format_table.*      # QualType → 观测表达式（流式 / 地址兜底）
+│   ├── text_edit.*         # 1-based TextEdit 结构 + JSON 序列化
+│   ├── compile_index.*     # 偏移索引 + 持久化缓存（.logc-idx）
+│   └── args.*              # CLI 参数解析（--var / --position）
+├── clang/
+│   └── engine_clang.*      # LibTooling AST 适配层：注释/注入 matcher
+├── main.cpp                # CLI 入口
+└── sample.cpp              # E2E 样例（含 pengtest 日志 + 对象/基本类型变量）
+```
+
+### 1GB compile_commands 秒级定位
+
+大型 monorepo 的 `compile_commands.json` 可达 1GB。logcommenter **不整载**它：
+
+- 构建时**单次流式扫描**，生成 `file → (offset, length)` 索引，持久化为 `.logc-idx`（毫秒级）；
+- 查询时按索引 `seek + read` **单条**编译参数（O(1)），再交给 Clang 解析该文件；
+- `.logc-idx` 带 mtime 失效：`compile_commands.json` 未变则跳过重扫。
 
 ## 构建
 
-项目用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 自动拉取 `llvm-project` 源码（当前锁定 `llvmorg-23.1.3`，GIT_SHALLOW 浅克隆）并现场编译 Clang/LLVM 库。
+依赖 **LLVM/Clang 23.1.3**。默认用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 拉取 `llvm-project` 源码并现场静态编译（Linux / Windows / macOS 均可，CI 已全绿）。
 
 ```bash
-mkdir build && cd build
-cmake ..
-make
+# 纯逻辑 core（无 Clang 依赖，快，必绿）
+cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target logcommenter_tests -j$(nproc)
+./build/logcommenter_tests
+
+# 完整工具（AST 引擎 + CLI）
+cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target logcommenter -j$(nproc)
+./build/logcommenter --inject --file src/sample.cpp --var total \
+  --compile-commands build/compile_commands.json
 ```
 
-> 注意：首次构建会完整编译 LLVM + Clang，耗时较长。CI 已配置 ccache 编译缓存，命中后增量秒过。
+构建选项：
 
-## 用法
+| 选项 | 说明 |
+|---|---|
+| `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 Clang）；OFF=仅纯逻辑 core |
+| `LOGCOMMENTER_SYSTEM_LLVM` | ON=用系统 LLVM/Clang；OFF=CPM 现场编译（默认） |
+| `CMAKE_CXX_COMPILER_LAUNCHER=ccache` | 启用 ccache 编译缓存 |
 
-```bash
-logcommenter -p <compile_commands.json 所在目录> <待处理的源文件...>
-```
+> 首次构建会完整编译 LLVM+Clang，耗时较长（CI 用 ccache + LLVM 源码缓存加速后续）。
 
-`-p` 指向 CMake 生成的 `compile_commands.json` 所在目录（工具据此获取每个文件的编译参数），后面列出要处理的源文件。示例：
+## 测试 / CI
 
-```bash
-./out/build/VS/logcommenter.exe -p ./out/build/VS ./src/sample.cpp
-```
+- **单测**（`logcommenter_tests`）：21 cases / 64 checks，覆盖格式表、TextEdit、偏移索引、CLI 参数。
+- **GitHub Actions**（`.github/workflows/ci.yml`）：
+  - `core` job：纯逻辑，零 Clang 依赖，快、必绿；
+  - `ast` job：CPM 现场构建 LLVM 23 + ccache + E2E smoke（覆盖 comment / inject(var) / inject(position) / object-ptr）。
 
-工具会**原地改写**源文件。`src/sample.cpp` 内置了一个含 `pengtest` 标记的样例，可直接用作验证对象。
+## Release
 
-## 标记字符串
+发布流程见 `.github/workflows/release.yml`：三平台（Linux x64 / Windows x64 / macOS arm64）现场编译 LLVM 静态链接，产出可执行文件并附加到 release tag。`--inject --position` 等最新能力以 release 二进制为准。
 
-默认标记为 `pengtest`，在 `src/main.cpp` 的 `isTargetString()` 中修改成你自己的标记即可：
+## 演进方向
 
-```cpp
-bool isTargetString(const clang::StringLiteral *Str) {
-  StringRef Content = Str->getString();
-  return Content.find("pengtest") != StringRef::npos;  // 换成你的标记
-}
-```
-
-## 目录结构
-
-```
-logcommenter/
-├── CMakeLists.txt      # CMake 构建配置（CPM 拉取 llvm-project）
-├── CMakePresets.json   # VS2022 + Ninja 预设
-├── cmake/
-│   └── CPM.cmake       # CPM 依赖管理
-├── src/
-│   ├── main.cpp        # logcommenter 主程序（AST 匹配 + 改写）
-│   └── sample.cpp      # 待处理的样例源码（含 pengtest 标记）
-└── .vscode/            # VS Code 调试/编译配置
-```
-
-## 当前限制与演进方向
-
-- **是"注释掉"而非物理删除**：日志以 `// ` 形式保留在源码里，保证可逆；
-- **匹配基于字符串字面量**，不做更深的语义判断。演进方向：按表达式 / 宏 / 日志级别做更精确的语义匹配，或支持 `#ifdef LOG_DISABLED` 式的条件编译静音。
+- **VSCode 插件薄壳**：右键"加观测日志" → `child_process` 调 CLI → `applyEdit`（CLI 的 JSON TextEdit 输出即为对接协议）。
+- **私有成员观测**：已拍板 **friend 注入**方案（声明进头文件、定义放 .cpp 非 inline，不改类布局/ABI）。
+- **对象成员级观测**：从"打印地址"升级为调用 `operator<<` / `toString()` 的语义打印。
