@@ -277,11 +277,19 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   // 静态链接的自定义可执行无法从 argv[0] 推导 clang resource dir，必须显式指定，
   // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
   // clang 的 builtin 头（stddef.h 等）只从 resource-dir 的 lib/clang/<ver>/include
-  // 查找，-isystem 对它们无效。因此按标准结构分发内置头：
-  //   <exeDir>/lib/clang/<version>/include   （打包/CI 复制 clang/lib/Headers 到此）
-  // resource-dir 指向 exeDir（存在即可通过 clang 校验），内置头由其标准子路径承接。
+  // 查找，-isystem 对它们无效。
   {
-    std::string rd = findResourceDir(exePath, err);
+    namespace fs = std::filesystem;
+    std::string rd;
+    // 优先用编译期 bake 的 LLVM build 目录（CI/构建机上存在，clang-headers target
+    // 会把内置头生成到 <bake>/lib/clang/<ver>/include），resource-dir 指向它最可靠。
+    // 发布版本机没有该 bake 路径时，fallback 到 exeDir 旁的随包分发结构：
+    //   <exeDir>/lib/clang/<version>/include
+    if (!LOGC_LLVM_BIN_DIR || !fs::exists(LOGC_LLVM_BIN_DIR)) {
+      rd = findResourceDir(exePath, err);
+    } else {
+      rd = LOGC_LLVM_BIN_DIR;
+    }
     tool.appendArgumentsAdjuster(
         [rd](const CommandLineArguments &args, StringRef filename) {
           // MSVC(CMake) compile_commands 的 command 常自带源文件路径 + /Fo 输出参数，
