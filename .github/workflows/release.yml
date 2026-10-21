@@ -33,7 +33,7 @@ jobs:
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
             artifact: logcommenter-windows-x86_64
-            exe: build/Release/logcommenter.exe
+            exe: build/logcommenter.exe
             cache_path: C:\Users\runneradmin\AppData\Local\ccache
             install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
@@ -63,14 +63,18 @@ jobs:
       - name: Install ccache
         run: ${{ matrix.install }}
 
+      # Ninja generator 不像 VS generator 会自动定位 MSVC，需显式加载 MSVC 开发环境
+      # （vcvarsall：cl/link/include/lib 进 PATH）。否则 Windows 上 llvm-tblgen 链接产物
+      # 运行报 0xC0000139（入口点找不到）。仅 Windows 需要。
+      - name: Enable MSVC dev environment (for Ninja on Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+
       - name: Configure
-        # 已验证组合：
-        #  - Linux:  Ninja + ccache（[N/M] 计数，稳定）
-        #  - Windows: 默认 VS generator + ccache（39537115952 用此组合构建成功；
-        #     Ninja+MSVC 链接出的 llvm-min-tblgen.exe 运行报 0xC0000139，弃用）
+        # 两平台统一 Ninja + ccache（[N/M] 计数）；Windows 环境由上方 msvc-dev-cmd 补齐。
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           else
             cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           fi
@@ -80,7 +84,7 @@ jobs:
         # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build build --target logcommenter --config Release --parallel 2
+            cmake --build build --target logcommenter --parallel 2
           else
             cmake --build build --target logcommenter --parallel $(nproc)
           fi
@@ -89,7 +93,7 @@ jobs:
       - name: Package zip (platform-prefixed)
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            powershell -Command "Compress-Archive -Path build/Release/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
+            powershell -Command "Compress-Archive -Path build/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
           else
             (cd build && zip ../${{ matrix.artifact }}.zip logcommenter)
           fi
