@@ -77,18 +77,47 @@ class Observer : public MatchFinder::MatchCallback {
   }
 
   void handleInject(const MatchFinder::MatchResult &res) {
-    if (const auto *VD = res.Nodes.getNodeAs<VarDecl>("target_var")) {
-      std::string type = VD->getType().getAsString();
-      std::string var = VD->getNameAsString();
-      ObsFormat fmt = formatForType(type, var);
-      if (!fmt.streamable) return;  // 对象等交由后续增强处理
-      std::string line =
-          "std::cout << \"[obs] " + var + "=\" << " + fmt.expr +
-          " << std::endl;";
-      SourceLocation end =
-          VD->getSourceRange().getEnd().getLocWithOffset(1);
-      col_->inserts.push_back({end, "\n    " + line});
+    // 变量来源：位置模式可命中引用（使用处）或声明（定义处）
+    const VarDecl *VD = nullptr;
+    if (const auto *Ref = res.Nodes.getNodeAs<DeclRefExpr>("target_ref")) {
+      VD = Ref->getDecl()->getAs<VarDecl>();
     }
+    if (!VD) VD = res.Nodes.getNodeAs<VarDecl>("target_var");
+    if (!VD) return;
+    if (args_.line > 0 && !covers(res, VD)) return;
+
+    std::string type = VD->getType().getAsString();
+    std::string var = VD->getNameAsString();
+    ObsFormat fmt = formatForType(type, var);
+    std::string line;
+    if (fmt.streamable) {
+      line = "std::cout << \"[obs] " + var + "=\" << " + fmt.expr +
+             " << std::endl;";
+    } else {
+      // 对象等不可直接 <<：打印地址兜底，保证有观测输出
+      line = "std::cout << \"[obs] " + var + " (ptr)=\" << (const void*)&" +
+             var + " << std::endl;";
+    }
+    SourceLocation end = VD->getSourceRange().getEnd().getLocWithOffset(1);
+    col_->inserts.push_back({end, "\n    " + line});
+  }
+
+  // 位置过滤：传入的 position (line,col) 必须落在该变量的声明/引用范围上。
+  // 命中返回 true；未给 position 时不过滤（此时由 matcher 的 hasName 收敛）。
+  bool covers(const MatchFinder::MatchResult &res, const VarDecl *VD) const {
+    SourceManager &SM = res.Context->getSourceManager();
+    SourceLocation b = SM.getSpellingLoc(VD->getSourceRange().getBegin());
+    SourceLocation e = SM.getSpellingLoc(VD->getSourceRange().getEnd());
+    unsigned bl = SM.getSpellingLineNumber(b);
+    unsigned bcl = SM.getSpellingColumnNumber(b);
+    unsigned el = SM.getSpellingLineNumber(e);
+    unsigned ecl = SM.getSpellingColumnNumber(e);
+    unsigned L = static_cast<unsigned>(args_.line);
+    unsigned C = static_cast<unsigned>(args_.col);
+    if (L < bl || L > el) return false;
+    if (L == bl && C < bcl) return false;
+    if (L == el && C > ecl) return false;
+    return true;
   }
 };
 
@@ -110,9 +139,16 @@ class EngineConsumer : public ASTConsumer {
                                      "cout", "cerr", "clog"))))))
               .bind("log_stream"),
           &observer_);
-    } else if (args_.action == Action::kInject && !args_.var.empty()) {
-      mf_->addMatcher(varDecl(hasName(args_.var)).bind("target_var"),
-                      &observer_);
+    } else if (args_.action == Action::kInject) {
+      if (!args_.var.empty()) {
+        // 按变量名：只匹配同名声明
+        mf_->addMatcher(varDecl(hasName(args_.var)).bind("target_var"),
+                        &observer_);
+      } else if (args_.line > 0) {
+        // 按位置：匹配引用（使用处）与声明（定义处），回调里按 (line,col) 过滤
+        mf_->addMatcher(declRefExpr().bind("target_ref"), &observer_);
+        mf_->addMatcher(varDecl().bind("target_var"), &observer_);
+      }
     }
   }
   void HandleTranslationUnit(ASTContext &Ctx) override {

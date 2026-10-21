@@ -57,8 +57,18 @@ jobs:
             --compile-commands build/compile_commands.json > /tmp/e2e_comment.json
           grep -Fq '"// "' /tmp/e2e_comment.json && echo "E2E comment OK"
           cat /tmp/e2e_comment.json
-          # --inject：在变量 total 处注入观测日志（输出 TextEdit 含 total=）
+          # --inject --var：在变量 total 处注入观测日志（输出 TextEdit 含 total=）
           ./build/logcommenter --inject --file src/sample.cpp --var total \
             --compile-commands build/compile_commands.json > /tmp/e2e_inject.json
-          grep -Fq 'total=' /tmp/e2e_inject.json && echo "E2E inject OK"
+          grep -Fq 'total=' /tmp/e2e_inject.json && echo "E2E inject(var) OK"
           cat /tmp/e2e_inject.json
+          # --inject --position：total 定义在第 4 行（标识符 col5-9），选 4:8 应按位置命中
+          ./build/logcommenter --inject --file src/sample.cpp --position 4:8 \
+            --compile-commands build/compile_commands.json > /tmp/e2e_pos.json
+          grep -Fq 'total=' /tmp/e2e_pos.json && echo "E2E inject(position) OK"
+          cat /tmp/e2e_pos.json
+          # 对象类型 fallback：Config 对象（不可 <<）应输出 (ptr) 地址观测
+          ./build/logcommenter --inject --file src/sample.cpp --var cfg \
+            --compile-commands build/compile_commands.json > /tmp/e2e_obj.json
+          grep -Fq '(ptr)' /tmp/e2e_obj.json && echo "E2E inject(object ptr) OK"
+          cat /tmp/e2e_obj.json
