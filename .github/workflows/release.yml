@@ -1,5 +1,5 @@
 # 发布工作流：三平台（Linux / Windows / macOS）现场编译 LLVM 23 静态链接，
-# 构建 logcommenter 可执行文件，并附加到指定 release tag。
+# 构建 logcommenter 可执行文件并打成带平台前缀的 zip，附加到指定 release tag。
 # 三平台均启用 ccache（ccache 4.x 支持 MSVC）+ 缓存 CPM 解压后的 LLVM 源码，
 # 冷编一次后后续 release 几乎全命中（免下载 + 免重编译）。
 # 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
@@ -73,11 +73,20 @@ jobs:
           fi
         shell: bash
 
+      - name: Package zip (platform-prefixed)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -Command "Compress-Archive -Path build/Release/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
+          else
+            (cd build && zip ../${{ matrix.artifact }}.zip logcommenter)
+          fi
+        shell: bash
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.exe }}
+          path: ${{ matrix.artifact }}.zip
           if-no-files-found: error
 
   attach:
