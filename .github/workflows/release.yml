@@ -1,6 +1,6 @@
-# 发布工作流：Linux / Windows 现场编译 LLVM 23 静态链接，构建 logcommenter 可执行文件
-# 并打成带平台前缀的 zip，附加到指定 release tag。
-# 启用 ccache + 缓存 CPM 解压后的 LLVM 源码，冷编一次后后续 release 几乎全命中。
+# 发布工作流：三平台（Linux / Windows / macOS）现场编译 LLVM 23 静态链接，
+# 构建 logcommenter 可执行文件，并附加到指定 release tag。
+# 三平台均启用 ccache（ccache 4.x 支持 MSVC），冷编一次后后续 release 增量构建。
 # 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
 name: release
 
@@ -26,12 +26,12 @@ jobs:
             artifact: logcommenter-linux-x86_64
             exe: build/logcommenter
             cache_path: ~/.cache/ccache
-            install: sudo apt-get update && sudo apt-get install -y ccache
+            install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
             artifact: logcommenter-windows-x86_64
-            exe: build/Release/logcommenter.exe
+            exe: build/logcommenter.exe
             cache_path: C:\Users\runneradmin\AppData\Local\ccache
-            install: choco install ccache -y
+            install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
     env:
       CCACHE_DIR: ${{ matrix.cache_path }}
@@ -56,22 +56,24 @@ jobs:
         run: ${{ matrix.install }}
 
       - name: Configure
-        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        # 统一 Ninja generator：CI 输出带 [N/M] 编译计数（VS generator 在 CI 无计数），
+        # 且 Ninja 单 config（exe 输出到 build/，不走 build/Release/）。
+        run: cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build logcommenter
         # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build build --target logcommenter --config Release --parallel 2
+            cmake --build build --target logcommenter --parallel 2
           else
-            cmake --build build --target logcommenter --config Release --parallel $(nproc)
+            cmake --build build --target logcommenter --parallel $(nproc)
           fi
         shell: bash
 
       - name: Package zip (platform-prefixed)
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            powershell -Command "Compress-Archive -Path build/Release/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
+            powershell -Command "Compress-Archive -Path build/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
           else
             (cd build && zip ../${{ matrix.artifact }}.zip logcommenter)
           fi

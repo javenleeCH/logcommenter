@@ -11,8 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
       - name: Configure (core only)
-        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=OFF -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=OFF -DCMAKE_BUILD_TYPE=Release
       - name: Build core tests
         run: cmake --build build --target logcommenter_tests -j$(nproc)
       - name: Run unit tests
@@ -33,10 +35,10 @@ jobs:
           key: ccache-logcommenter-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'cmake/CPM.cmake') }}
           restore-keys: |
             ccache-logcommenter-${{ runner.os }}-
-      - name: Install ccache
-        run: sudo apt-get update && sudo apt-get install -y ccache
+      - name: Install ccache + ninja
+        run: sudo apt-get update && sudo apt-get install -y ccache ninja-build
       - name: Configure (full, CPM)
-        run: cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        run: cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       - name: Build full tool
         run: cmake --build build --target logcommenter -j$(nproc)
       - name: Save ccache even on failure
