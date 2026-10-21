@@ -106,8 +106,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+          # -R 显式指定仓库，避免 gh 在无 git 上下文的 runner 上报 "not a git repository"
           for f in dist/*/*; do
             [ -f "$f" ] || continue
             echo "== upload $f =="
-            gh release upload "${{ steps.tag.outputs.tag }}" "$f" --clobber
+            gh release upload "${{ steps.tag.outputs.tag }}" "$f" -R "${{ github.repository }}" --clobber
           done
