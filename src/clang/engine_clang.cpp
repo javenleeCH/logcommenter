@@ -229,12 +229,15 @@ std::string findResourceDir(const std::string &exePath, std::string *err) {
   namespace fs = std::filesystem;
   fs::path p(exePath);
   fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
+  // CI/相对启动时 argv[0] 可能是相对路径（如 ./build/logcommenter），必须转成绝对，
+  // 否则 clang 对相对 -resource-dir 的解析会随工作目录漂移而找不到内置头。
   std::error_code ec;
-  if (!fs::exists(dir, ec)) {
-    if (err) *err = "exe dir not found: " + dir.string();
+  fs::path absDir = fs::absolute(dir, ec);
+  if (ec || !fs::exists(absDir, ec)) {
+    if (err) *err = "exe dir not found: " + absDir.string();
     return "";
   }
-  return dir.string();
+  return absDir.string();
 }
 
 }  // namespace
