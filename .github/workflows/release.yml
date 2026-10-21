@@ -95,11 +95,19 @@ jobs:
 
       - name: Package zip (platform-prefixed)
         run: |
-          # exe 与 clang 内置头同包分发：exe 运行时 resource-dir 指向 exe 所在目录，
-          # clang 的 builtin 头（stddef.h 等）只从 <exeDir>/lib/clang/<ver>/include 查找，
-          # 按标准结构复制内置头到 package/lib/clang/23.1.3/include。
-          mkdir -p package/lib/clang/23.1.3/include
-          cp -r build/_deps/llvm_project-src/clang/lib/Headers/* package/lib/clang/23.1.3/include/ 2>/dev/null || true
+          # exe 与 clang 内置头同包分发：clang 的 builtin 头（stddef.h 等）只从
+          # <resource-dir>/include 查找，-resource-dir 指向 lib/clang/<ver> 版本目录。
+          # 优先复制构建树 clang-resource-headers 生成的完整内置头（含 tablegen 产物），
+          # 无则回退源码头。
+          mkdir -p package/lib/clang
+          copied=""
+          for d in build/_deps/llvm_project-build/lib/clang/*/include; do
+            if [ -d "$d" ]; then cp -r "$(dirname "$d")" package/lib/clang/; copied=1; break; fi
+          done
+          if [ -z "$copied" ]; then
+            mkdir -p package/lib/clang/23.1.3/include
+            cp -r build/_deps/llvm_project-src/clang/lib/Headers/* package/lib/clang/23.1.3/include/
+          fi
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp build/logcommenter.exe package/logcommenter.exe
             # 在 package 内压缩，路径展平到 zip 根；单引号防 bash 展开 * / \（由 PowerShell 处理）

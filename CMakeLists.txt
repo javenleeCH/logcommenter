@@ -75,10 +75,12 @@ if(LOGCOMMENTER_BUILD_AST)
     target_link_libraries(logcommenter_engine PUBLIC logcommenter_core
       clangTooling clangASTMatchers clangRewrite clangFrontend
       clangSerialization clangAST clangBasic clangLex)
-    # EXCLUDE_FROM_ALL 使 clang 内置头目标（clang-headers）默认不被构建，
-    # 但 LibTooling 运行时依赖它们（resource dir 里的 stddef.h 等）。
+    # EXCLUDE_FROM_ALL 使 clang 内置头目标默认不被构建，但 LibTooling 运行时依赖
+    # 它们（resource-dir include/ 下的 stddef.h 等）。注意：LLVM 23 中内置头由
+    # clang-resource-headers 生成到 <LLVM_BINARY_DIR>/lib/clang/<major>/include；
+    # clang-headers 只是 install 组件别名，不产出文件。
     # 显式依赖，确保 --target logcommenter 时先生成内置头。
-    add_dependencies(logcommenter_engine clang-headers)
+    add_dependencies(logcommenter_engine clang-resource-headers)
 
   add_executable(logcommenter src/main.cpp)
   target_link_libraries(logcommenter PRIVATE logcommenter_engine logcommenter_core)

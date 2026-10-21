@@ -65,9 +65,10 @@ jobs:
       - name: E2E smoke (comment + inject)
         run: |
           set -e
-          # exe 运行时 resource-dir 指向 exe 所在目录，clang 的 builtin 头（stddef.h 等）
-          # 只从 <exeDir>/lib/clang/<ver>/include 查找，必须按标准结构复制内置头到 exe 旁
-          # 复制 clang-headers 实际生成的版本目录（版本与 clang 严格一致）；无则回退源码头 23.1.3
+          # clang 的 builtin 头（stddef.h 等）只从 <resource-dir>/include 查找，
+          # -resource-dir 必须指向直接包含 include/ 的版本目录。按标准结构复制
+          # 构建树 clang-resource-headers 生成的版本目录到 exe 旁（验证随包分发布局）；
+          # 无则回退源码头 23.1.3
           mkdir -p build/lib/clang
           copied=""
           for d in build/_deps/llvm_project-build/lib/clang/*/include; do
@@ -88,8 +89,8 @@ jobs:
             --compile-commands build/compile_commands.json > /tmp/e2e_inject.json
           grep -Fq 'total=' /tmp/e2e_inject.json && echo "E2E inject(var) OK"
           cat /tmp/e2e_inject.json
-          # --inject --position：total 定义在第 4 行（标识符 col5-9），选 4:8 应按位置命中
-          ./build/logcommenter --inject --file src/sample.cpp --position 4:8 \
+          # --inject --position：total 定义在第 10 行（标识符 col7-11），选 10:8 应按位置命中
+          ./build/logcommenter --inject --file src/sample.cpp --position 10:8 \
             --compile-commands build/compile_commands.json > /tmp/e2e_pos.json
           grep -Fq 'total=' /tmp/e2e_pos.json && echo "E2E inject(position) OK"
           cat /tmp/e2e_pos.json

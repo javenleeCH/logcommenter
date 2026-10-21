@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <set>
 
 #include <filesystem>
 
@@ -53,6 +54,7 @@ class Observer : public MatchFinder::MatchCallback {
  private:
   const CliArgs &args_;
   Collector *col_;
+  std::set<const VarDecl *> seen_;  // 已注入变量（canonical decl），position 模式去重
 
   bool isTarget(const StringLiteral *Str) const {
     return Str->getString().find("pengtest") != StringRef::npos;
@@ -85,6 +87,10 @@ class Observer : public MatchFinder::MatchCallback {
     }
     if (!VD) VD = res.Nodes.getNodeAs<VarDecl>("target_var");
     if (!VD) return;
+    // position 模式同时挂了 varDecl 与 declRefExpr 两个 matcher：指向同一声明的
+    // 引用与声明会各命中一次（covers 都按声明范围判定），按 canonical decl 去重，
+    // 避免同一变量注入两条重复 edit。
+    if (!seen_.insert(VD->getCanonicalDecl()).second) return;
     if (args_.line > 0 && !covers(res, VD)) return;
 
     std::string type = VD->getType().getAsString();
@@ -222,9 +228,29 @@ std::string writeSingleEntryDb(const std::string &entryJson) {
   return tmp;
 }
 
-// 运行时基于可执行文件所在目录定位 clang 内置头：随包分发 <exeDir>/clang-headers。
-// resource-dir 设为 exeDir（一定存在，满足 clang 的校验），真正的内置头由 -isystem
-// 指向 exeDir/clang-headers。不再依赖编译期 bake 的构建机路径（那在本机不存在）。
+// clang 的 resource-dir 语义：直接包含 include/ 的目录（标准布局
+// <prefix>/lib/clang/<version>）；内置头（stddef.h 等）只从 <resource-dir>/include
+// 查找，-isystem 对它们无效。因此 -resource-dir 必须指到版本目录一级，不能只给 exeDir。
+// 探测顺序：
+//   1. <exeDir>/lib/clang/<ver>        随包分发（release zip / CI 复制到 exe 旁）
+//   2. <LLVM 构建树>/lib/clang/<ver>   编译期 bake（clang-resource-headers 产出）
+//   3. <exeDir>                        兜底（目录存在，满足 clang 校验，但内置头缺失）
+// 版本目录名可能是完整版本（23.1.3，打包脚本）或仅 major（23，LLVM 构建树），
+// 优先精确匹配 CLANG_VERSION_STRING，否则接受任何含 include/stddef.h 的版本目录。
+std::string probeResourceDirUnder(const std::filesystem::path &base) {
+  namespace fs = std::filesystem;
+  fs::path root = base / "lib" / "clang";
+  std::error_code ec;
+  if (!fs::is_directory(root, ec)) return "";
+  fs::path exact = root / CLANG_VERSION_STRING;
+  if (fs::exists(exact / "include" / "stddef.h", ec)) return exact.string();
+  for (auto it = fs::directory_iterator(root, ec);
+       !ec && it != fs::directory_iterator(); it.increment(ec))
+    if (it->is_directory(ec) && fs::exists(it->path() / "include" / "stddef.h", ec))
+      return it->path().string();
+  return "";
+}
+
 std::string findResourceDir(const std::string &exePath, std::string *err) {
   namespace fs = std::filesystem;
   fs::path p(exePath);
@@ -237,7 +263,10 @@ std::string findResourceDir(const std::string &exePath, std::string *err) {
     if (err) *err = "exe dir not found: " + absDir.string();
     return "";
   }
-  return absDir.string();
+  std::string rd = probeResourceDirUnder(absDir);
+  if (rd.empty()) rd = probeResourceDirUnder(fs::path(LOGC_LLVM_BIN_DIR));
+  if (rd.empty()) rd = absDir.string();
+  return rd;
 }
 
 }  // namespace
@@ -273,10 +302,9 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   }
   std::vector<std::string> sources = {args.file};
   ClangTool tool(*db, sources);
-  // 静态 exe 无系统 clang 安装，clang 内置头（stddef.h 等 builtin 头）只从
-  // resource-dir 的 lib/clang/<ver>/include 查找，-isystem 对它们无效。
-  // 因此随包分发内置头到 <exeDir>/lib/clang/<CLANG_VERSION_STRING>/include，
-  // resource-dir 指向 exeDir（绝对路径），clang 按自身 CLANG_VERSION 匹配版本目录。
+  // 静态链接的 clang 无系统 resource-dir（编译期默认路径只在构建机上存在）。
+  // 内置头（stddef.h 等）只从 <resource-dir>/include 查找，-isystem 对它们无效，
+  // 因此 -resource-dir 必须指向直接包含 include/ 的版本目录（见 findResourceDir）。
   {
     namespace fs = std::filesystem;
     std::string rd = findResourceDir(exePath, err);
@@ -328,20 +356,13 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
               }
             }
           }
-          // 调试：LOGCOMMENTER_DEBUG=1 时打印实际 resource-dir、clang 版本与内置头位置
+          // 调试：LOGCOMMENTER_DEBUG=1 时打印实际 resource-dir 与内置头命中情况
           if (std::getenv("LOGCOMMENTER_DEBUG")) {
-            std::string v = CLANG_VERSION_STRING;
-            std::string base = rd + "/lib/clang";
             std::error_code ec;
-            std::string hdr = base + "/" + v + "/include/stddef.h";
-            std::string dirs;
-            for (auto it = fs::directory_iterator(base, ec);
-                 !ec && it != fs::directory_iterator(); it.increment(ec))
-              dirs += it->path().filename().string() + " ";
-            std::fprintf(stderr,
-                "[logc] resource-dir=%s clang=%s stddef=%s lib/clang=[%s]\n",
-                rd.c_str(), v.c_str(), fs::exists(hdr, ec) ? "yes" : "no",
-                dirs.c_str());
+            std::string hdr = rd + "/include/stddef.h";
+            std::fprintf(stderr, "[logc] resource-dir=%s clang=%s stddef=%s\n",
+                         rd.c_str(), CLANG_VERSION_STRING,
+                         fs::exists(hdr, ec) ? "yes" : "no");
             out.push_back("-v");  // 打印 clang 实际 include 搜索路径（builtin + GCC）
           }
           return out;
