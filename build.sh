@@ -11,6 +11,10 @@ case "$MODE" in
   *)       BUILD_PRESET=ninja-debug ;;
 esac
 
+# 代理：CPM 拉取 llvm-project 需要（默认 127.0.0.1:4780，可用环境变量覆盖）
+[ -z "${http_proxy:-}" ]  && export http_proxy="http://127.0.0.1:4780"
+[ -z "${https_proxy:-}" ] && export https_proxy="http://127.0.0.1:4780"
+
 CACHE_ARGS=()
 if command -v ccache >/dev/null 2>&1; then
   CACHE_ARGS+=("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")

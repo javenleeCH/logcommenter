@@ -8,7 +8,8 @@
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
             }
         }
     ],

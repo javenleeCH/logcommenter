@@ -291,6 +291,43 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
           auto cleaned = stripSourceFileArg(vec, cur);
           CommandLineArguments out(cleaned.begin(), cleaned.end());
           if (!rd.empty()) out.push_back("-resource-dir=" + rd);
+          // 健壮化：MSVC(CMake) 的 compile_commands command 是 cl.exe / clang-cl。
+          // 从编译器路径推导它所属工具链的 include（MSVC STL + Windows SDK ucrt/shared/um），
+          // 注入 -isystem —— 不依赖环境 INCLUDE，和 clangd 依据编译器路径找头文件一致。
+          // 编译器在 PATH（如 build.bat 的 CC=cl.exe）时 compiler 为相对名，parent_path 为空，
+          // 目录存在性检查失败即跳过，安全。
+          if (!cleaned.empty()) {
+            namespace fs2 = std::filesystem;
+            std::string bc = fs2::path(cleaned[0]).filename().string();
+            std::string lower;
+            for (char c : bc) lower += (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+            if (lower == "cl.exe" || lower == "clang-cl.exe" || lower == "clang-cl") {
+              fs2::path cp(cleaned[0]);
+              fs2::path ver = cp.parent_path().parent_path().parent_path().parent_path();
+              fs2::path msvcInc = ver / "include";   // ...\MSVC\<ver>\include (MSVC STL)
+              std::error_code ec;
+              if (fs2::is_directory(msvcInc, ec)) {
+                // clang 处理 MSVC(CMake) command 时是 clang-cl 模式，只认 -imsvc / /external:I，
+                // 不认 -isystem（会被忽略）。用 -imsvc 表示 MSVC include。
+                out.push_back("-imsvc" + msvcInc.string());
+                fs2::path root = ver.parent_path().parent_path().parent_path(); // 工具链根
+                fs2::path kits = root / "Windows Kits" / "10" / "Include";
+                std::vector<fs2::path> sdkVers;
+                ec.clear();
+                for (auto it = fs2::directory_iterator(kits, ec);
+                     !ec && it != fs2::directory_iterator(); it.increment(ec))
+                  if (it->is_directory(ec)) sdkVers.push_back(it->path());
+                if (!sdkVers.empty()) {
+                  std::sort(sdkVers.begin(), sdkVers.end());
+                  fs2::path sdk = sdkVers.back();  // 取最新 SDK 版本
+                  for (const char *sub : {"ucrt", "shared", "um"}) {
+                    fs2::path d = sdk / sub;
+                    if (fs2::is_directory(d, ec)) out.push_back("-imsvc" + d.string());
+                  }
+                }
+              }
+            }
+          }
           // 调试：LOGCOMMENTER_DEBUG=1 时打印实际 resource-dir、clang 版本与内置头位置
           if (std::getenv("LOGCOMMENTER_DEBUG")) {
             std::string v = CLANG_VERSION_STRING;

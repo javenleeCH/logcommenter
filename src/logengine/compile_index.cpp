@@ -29,9 +29,26 @@ struct FileEntry {
 // 向前（start 方向）从 pos 起找最近的 '{'
 size_t findBackwardBrace(const std::string &data, size_t pos) {
   if (pos == 0) return std::string::npos;
+  // 向后找条目开括号 '{'，但必须跳过引号字符串（command 里可能含 { }）。
+  // 否则一旦某条 command 字符串里有 '{'，会把条目起点选在字符串中间，导致括号失衡、跳过后续条目。
+  bool in_str = false, esc = false;
   for (size_t i = pos; i-- > 0;) {
-    if (data[i] == '{') return i;
-    if (data[i] == '\n' || data[i] == '\r') continue;
+    char c = data[i];
+    if (in_str) {
+      if (esc) {
+        esc = false;
+      } else if (c == '\\') {
+        esc = true;
+      } else if (c == '"') {
+        in_str = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_str = true;
+    } else if (c == '{') {
+      return i;
+    }
   }
   return std::string::npos;
 }
@@ -305,8 +322,10 @@ bool CompileIndex::loadCache(const std::string &cachePath,
     idx_[file] = {static_cast<size_t>(o), static_cast<size_t>(l)};
   }
   jsonPath_ = jsonPath;
+  // isStale() 用 mtime_ 判断"json 是否比缓存新"。这里必须记缓存文件(生成时刻)的
+  // mtime；若记加载时 json 的 mtime，则 isStale() 里 cur==mtime_ 恒为 false，旧缓存永不失效。
   struct stat st;
-  if (stat(jsonPath.c_str(), &st) == 0) mtime_ = st.st_mtime;
+  if (stat(cachePath.c_str(), &st) == 0) mtime_ = st.st_mtime;
   return true;
 }
 
