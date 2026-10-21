@@ -273,23 +273,13 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   }
   std::vector<std::string> sources = {args.file};
   ClangTool tool(*db, sources);
-#ifdef LOGC_LLVM_BIN_DIR
-  // 静态链接的自定义可执行无法从 argv[0] 推导 clang resource dir，必须显式指定，
-  // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
-  // clang 的 builtin 头（stddef.h 等）只从 resource-dir 的 lib/clang/<ver>/include
-  // 查找，-isystem 对它们无效。
+  // 静态 exe 无系统 clang 安装，clang 内置头（stddef.h 等 builtin 头）只从
+  // resource-dir 的 lib/clang/<ver>/include 查找，-isystem 对它们无效。
+  // 因此随包分发内置头到 <exeDir>/lib/clang/<CLANG_VERSION_STRING>/include，
+  // resource-dir 指向 exeDir（绝对路径），clang 按自身 CLANG_VERSION 匹配版本目录。
   {
     namespace fs = std::filesystem;
-    std::string rd;
-    // 优先用编译期 bake 的 LLVM build 目录（CI/构建机上存在，clang-headers target
-    // 会把内置头生成到 <bake>/lib/clang/<ver>/include），resource-dir 指向它最可靠。
-    // 发布版本机没有该 bake 路径时，fallback 到 exeDir 旁的随包分发结构：
-    //   <exeDir>/lib/clang/<version>/include
-    if (!LOGC_LLVM_BIN_DIR || !fs::exists(LOGC_LLVM_BIN_DIR)) {
-      rd = findResourceDir(exePath, err);
-    } else {
-      rd = LOGC_LLVM_BIN_DIR;
-    }
+    std::string rd = findResourceDir(exePath, err);
     tool.appendArgumentsAdjuster(
         [rd](const CommandLineArguments &args, StringRef filename) {
           // MSVC(CMake) compile_commands 的 command 常自带源文件路径 + /Fo 输出参数，
@@ -301,10 +291,24 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
           auto cleaned = stripSourceFileArg(vec, cur);
           CommandLineArguments out(cleaned.begin(), cleaned.end());
           if (!rd.empty()) out.push_back("-resource-dir=" + rd);
+          // 调试：LOGCOMMENTER_DEBUG=1 时打印实际 resource-dir、clang 版本与内置头位置
+          if (std::getenv("LOGCOMMENTER_DEBUG")) {
+            std::string v = CLANG_VERSION_STRING;
+            std::string base = rd + "/lib/clang";
+            std::error_code ec;
+            std::string hdr = base + "/" + v + "/include/stddef.h";
+            std::string dirs;
+            for (auto it = fs::directory_iterator(base, ec);
+                 !ec && it != fs::directory_iterator(); it.increment(ec))
+              dirs += it->path().filename().string() + " ";
+            std::fprintf(stderr,
+                "[logc] resource-dir=%s clang=%s stddef=%s lib/clang=[%s]\n",
+                rd.c_str(), v.c_str(), fs::exists(hdr, ec) ? "yes" : "no",
+                dirs.c_str());
+          }
           return out;
         });
   }
-#endif
   EngineFactory factory(args, edits, err);
   int rc = tool.run(&factory);
   std::remove(tmpDb.c_str());
