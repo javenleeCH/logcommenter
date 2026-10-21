@@ -273,15 +273,14 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
 #ifdef LOGC_LLVM_BIN_DIR
   // 静态链接的自定义可执行无法从 argv[0] 推导 clang resource dir，必须显式指定，
   // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
+  // clang 的 builtin 头（stddef.h 等）只从 resource-dir 的 lib/clang/<ver>/include
+  // 查找，-isystem 对它们无效。因此按标准结构分发内置头：
+  //   <exeDir>/lib/clang/<version>/include   （打包/CI 复制 clang/lib/Headers 到此）
+  // resource-dir 指向 exeDir（存在即可通过 clang 校验），内置头由其标准子路径承接。
   {
-    namespace fs = std::filesystem;
     std::string rd = findResourceDir(exePath, err);
-    // clang 内置头随包分发：<exeDir>/clang-headers（release 打包时复制 clang/lib/Headers）。
-    std::string headers = rd.empty() ? "" : rd + "/clang-headers";
-    bool hasHeaders = !headers.empty() && fs::exists(headers);
     tool.appendArgumentsAdjuster(
-        [rd, headers, hasHeaders](const CommandLineArguments &args,
-                                  StringRef filename) {
+        [rd](const CommandLineArguments &args, StringRef filename) {
           // MSVC(CMake) compile_commands 的 command 常自带源文件路径 + /Fo 输出参数，
           // ClangTool 又会注入 --file 的源文件，导致"多个输入 + /Fo 单输出"冲突
           // （cannot specify '/Fo' when compiling multiple source files）。
@@ -291,10 +290,6 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
           auto cleaned = stripSourceFileArg(vec, cur);
           CommandLineArguments out(cleaned.begin(), cleaned.end());
           if (!rd.empty()) out.push_back("-resource-dir=" + rd);
-          if (hasHeaders) {
-            out.push_back("-isystem");
-            out.push_back(headers);
-          }
           return out;
         });
   }

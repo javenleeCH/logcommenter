@@ -95,10 +95,11 @@ jobs:
 
       - name: Package zip (platform-prefixed)
         run: |
-          # exe 与 clang 内置头同包分发：exe 运行时按 argv[0] 同目录定位 clang-headers
-          # （resource-dir 不依赖构建机 bake 路径）。
-          mkdir -p package/clang-headers
-          cp -r build/_deps/llvm_project-src/clang/lib/Headers/* package/clang-headers/ 2>/dev/null || true
+          # exe 与 clang 内置头同包分发：exe 运行时 resource-dir 指向 exe 所在目录，
+          # clang 的 builtin 头（stddef.h 等）只从 <exeDir>/lib/clang/<ver>/include 查找，
+          # 按标准结构复制内置头到 package/lib/clang/23.1.3/include。
+          mkdir -p package/lib/clang/23.1.3/include
+          cp -r build/_deps/llvm_project-src/clang/lib/Headers/* package/lib/clang/23.1.3/include/ 2>/dev/null || true
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp build/logcommenter.exe package/logcommenter.exe
             # 在 package 内压缩，路径展平到 zip 根；单引号防 bash 展开 * / \（由 PowerShell 处理）
