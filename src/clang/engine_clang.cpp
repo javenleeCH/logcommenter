@@ -80,7 +80,7 @@ class Observer : public MatchFinder::MatchCallback {
     // 变量来源：位置模式可命中引用（使用处）或声明（定义处）
     const VarDecl *VD = nullptr;
     if (const auto *Ref = res.Nodes.getNodeAs<DeclRefExpr>("target_ref")) {
-      VD = Ref->getDecl()->getAs<VarDecl>();
+      VD = llvm::dyn_cast<VarDecl>(Ref->getDecl());
     }
     if (!VD) VD = res.Nodes.getNodeAs<VarDecl>("target_var");
     if (!VD) return;
