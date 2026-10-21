@@ -58,5 +58,13 @@
 - `LOGCOMMENTER_DEBUG=1`：打印 resource-dir 解析结果与内置头命中，并让 clang 打印 include
   搜索路径（`-v`）。
 - compile_commands 索引缓存 `<db>.logc-idx` 按 mtime 失效；改了 compile_commands 后行为异常先删它。
-- `--inject --position` 模式同时挂 `varDecl` 与 `declRefExpr` 两个 matcher 且都按声明范围过滤，
-  已按 canonical decl 去重；若要支持"光标落在引用处"，需让 ref 命中按引用自身范围判定（未实现）。
+- `--inject --position` 模式同时挂 `varDecl` 与 `declRefExpr` 两个 matcher：命中哪个就按
+  哪个自身的源码范围过滤位置，再按 canonical decl 去重。顺序不可反——先去重会让
+  "位置在引用处"的命中被声明命中提前占用 seen_ 而整体落空。
+- 注入插入点 = 声明语句（DeclStmt，含 `;`）之后；for/if/switch/while 头部声明插到
+  复合语句体开头，体无大括号则放弃。TextEdit 语义：纯插入在 (line,col) 字符之前
+  （1-based，col=行长+1 为行尾）。**改插入逻辑后必须跑 `tools/e2e_apply_check.py`**
+  （应用 edit 后源码仍可解析 + 幂等）——CI 只 grep JSON 文本时，插入点落在 token
+  中间的缺陷曾漏网（"42" 被劈成两半）。
+- 多行 `--comment`：流式日志逐层上溯取整条 operator<< 链，语句覆盖的每一行行首
+  都插 `// `；局限：跨行字符串字面量内部也会被插注释（罕见，接受）。

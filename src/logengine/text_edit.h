@@ -12,6 +12,9 @@ struct Position {
 };
 
 struct TextEdit {
+// 语义：start == end 为纯插入——text 插入到 (line,col) 处字符**之前**；
+// col ∈ [1, 行长+1]，col = 行长+1 表示行尾（换行符之前）。start < end 为
+// 区间替换（当前引擎未用到，保留给插件协议）。
   Position start;
   Position end;
   std::string text;

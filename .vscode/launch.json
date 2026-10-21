@@ -5,18 +5,19 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "logcommenter",
+            "name": "logcommenter (inject sample.cpp)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceRoot}/out/build/VS/bin/Debug/logcommenter.exe",
+            "program": "${workspaceRoot}/out/build/ninja/logcommenter.exe",
             "args": [
-                "-p",
-                "${workspaceRoot}/out/build/VS",
-                "D:/CodeSpace/cdir/logcommenter/src/sample.cpp"
+                "--inject",
+                "--file", "${workspaceRoot}/src/sample.cpp",
+                "--var", "total",
+                "--compile-commands", "${workspaceRoot}/out/build/ninja/compile_commands.json"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceRoot}",
-            "environment": [],
+            "environment": []
         }
     ]
 }

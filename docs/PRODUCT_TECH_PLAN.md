@@ -34,7 +34,7 @@ logcommenter 定位为基于 Clang / LibTooling 的 C++ 源码日志工具：**�
 
 - **性能**：右键响应 ≤ 1–2 秒；不扫描 1GB；AST 只解析当前文件。
 - **资源**：短生命周期进程，不常驻额外内存，不与 clangd 抢占。
-- **兼容**：LLVM 21.1.4 / Clang；Windows + Linux。
+- **兼容**：LLVM 23.1.3 / Clang；Windows + Linux。
 - **可靠**：类型感知（int / string / 指针 / 容器）；重复调用幂等（已注释跳过）；不破坏源文件与缩进。
 
 ## 3. 技术方案

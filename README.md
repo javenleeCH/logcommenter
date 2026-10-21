@@ -38,15 +38,19 @@
 
 ```json
 { "file": "src/sample.cpp",
-  "edits": [ { "range": { "start": {"line":4,"col":8}, "end": {"line":4,"col":8} },
+  "edits": [ { "range": { "start": {"line":10,"col":18}, "end": {"line":10,"col":18} },
                "text": "\n    std::cout << \"[obs] total=\" << total << std::endl;" } ] }
 ```
+
+TextEdit 语义：`start == end` 为纯插入，文本插到 `(line,col)` 字符**之前**（1-based，`col=行长+1` 即行尾）。注入点为声明语句（含 `;`）之后，应用后即是合法 C++。
 
 ### 观测能力
 
 - **基本类型**（`int/float/double/bool/char*/std::string/指针` 等）：直接 `<<` 打印值。
 - **对象 / 复杂类型**（不可直接 `<<`）：自动兜底打印地址 `(const void*)&var`，保证有观测输出。
 - **`--position` 命中声明处或引用处**：光标落在变量 token 上即可，不必输入名字——VSCode 右键"加观测日志"的核心场景。
+- **插入位置与幂等**：观测语句插在声明语句（含 `;`）之后；`for/if/switch` 头部声明的观测插到循环/分支体开头；同一变量重复注入自动跳过，不叠加。
+- **范围**：当前仅支持函数局部变量；全局/类成员观测（friend 注入）与形参观测见演进方向。
 
 ## 架构
 
@@ -100,10 +104,10 @@ cmake --build build --target logcommenter -j$(nproc)
 
 ## 测试 / CI
 
-- **单测**（`logcommenter_tests`）：21 cases / 64 checks，覆盖格式表、TextEdit、偏移索引、CLI 参数。
+- **单测**（`logcommenter_tests`）：23 cases / 74 checks，覆盖格式表、TextEdit、偏移索引、CLI 参数。
 - **GitHub Actions**（`.github/workflows/ci.yml`）：
   - `core` job：纯逻辑，零 Clang 依赖，快、必绿；
-  - `ast` job：CPM 现场构建 LLVM 23 + ccache + E2E smoke（覆盖 comment / inject(var) / inject(position) / object-ptr）。
+  - `ast` job：CPM 现场构建 LLVM 23 + ccache + E2E smoke——覆盖 comment / inject(var) / inject(position) / 注释/注入各自的多行与幂等语义，并包含"应用 TextEdit 后源码仍可解析 + 重复注入幂等"的落盘校验（`tools/e2e_apply_check.py`）。
 
 ## Release
 

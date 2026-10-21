@@ -1,12 +1,20 @@
 // Clang 适配层实现：LibTooling 单文件处理，偏移索引精准取编译参数。
 #include "engine_clang.h"
 
+#include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
 #include <set>
+
+#ifdef _WIN32
+#include <process.h>  // _getpid
+#else
+#include <unistd.h>   // getpid
+#endif
 
 #include <filesystem>
 
@@ -55,70 +63,177 @@ class Observer : public MatchFinder::MatchCallback {
   const CliArgs &args_;
   Collector *col_;
   std::set<const VarDecl *> seen_;  // 已注入变量（canonical decl），position 模式去重
+  std::set<unsigned> commentedLines_;  // 已注释行号（同一行多条日志只插一份 "// "）
 
   bool isTarget(const StringLiteral *Str) const {
     return Str->getString().find("pengtest") != StringRef::npos;
   }
 
+  // ---- --comment ----
+
   void handleComment(const MatchFinder::MatchResult &res) {
-    if (const auto *Str =
-            res.Nodes.getNodeAs<StringLiteral>("func_log_str")) {
-      if (isTarget(Str)) {
-        if (const auto *Call = res.Nodes.getNodeAs<CallExpr>("log_call")) {
-          col_->inserts.push_back({Call->getBeginLoc(), "// "});
-        }
-      }
+    const CallExpr *Call = res.Nodes.getNodeAs<CallExpr>("log_call");
+    const StringLiteral *Str =
+        res.Nodes.getNodeAs<StringLiteral>("func_log_str");
+    if (!Call) {
+      Call = res.Nodes.getNodeAs<CallExpr>("log_stream");
+      Str = res.Nodes.getNodeAs<StringLiteral>("stream_log_str");
     }
-    if (const auto *Str =
-            res.Nodes.getNodeAs<StringLiteral>("stream_log_str")) {
-      if (isTarget(Str)) {
-        if (const auto *C = res.Nodes.getNodeAs<CallExpr>("log_stream")) {
-          col_->inserts.push_back({C->getBeginLoc(), "// "});
-        }
-      }
+    if (!Call || !Str || !isTarget(Str)) return;
+    // 流式日志是链式 operator<<：match 命中的是最内层调用，须逐层上溯取整条
+    // 链的范围，否则多行链只注释首行会留下悬空续行、破坏语法。
+    const CallExpr *full = Call;
+    for (;;) {
+      auto P = res.Context->getParents(*full);
+      if (P.empty()) break;
+      const CallExpr *up = P[0].get<CallExpr>();
+      if (!up) break;
+      const FunctionDecl *FD = up->getDirectCallee();
+      if (!FD || FD->getNameAsString() != "operator<<") break;
+      full = up;
+    }
+    commentStatementLines(res, full->getSourceRange());
+  }
+
+  // 对语句范围覆盖的每一行行首插 "// "（可逆：删除 "// " 即还原）。
+  // 多行语句（如链式 << 跨行）必须每行都注释，否则续行成为悬空代码。
+  void commentStatementLines(const MatchFinder::MatchResult &res,
+                             SourceRange R) {
+    SourceManager &SM = res.Context->getSourceManager();
+    SourceLocation b = SM.getSpellingLoc(R.getBegin());
+    SourceLocation e = SM.getSpellingLoc(R.getEnd());
+    if (b.isInvalid() || e.isInvalid()) return;
+    FileID fid = SM.getFileID(b);
+    unsigned bl = SM.getSpellingLineNumber(b);
+    unsigned el = SM.getSpellingLineNumber(e);
+    for (unsigned L = bl; L <= el; ++L) {
+      // 同一行并排多条目标日志只插一份
+      if (!commentedLines_.insert(L).second) continue;
+      SourceLocation ls = SM.translateLineCol(fid, L, 1);
+      if (ls.isInvalid()) continue;
+      col_->inserts.push_back({ls, "// "});
     }
   }
 
+  // ---- --inject ----
+
   void handleInject(const MatchFinder::MatchResult &res) {
     // 变量来源：位置模式可命中引用（使用处）或声明（定义处）
-    const VarDecl *VD = nullptr;
-    if (const auto *Ref = res.Nodes.getNodeAs<DeclRefExpr>("target_ref")) {
-      VD = llvm::dyn_cast<VarDecl>(Ref->getDecl());
-    }
+    const DeclRefExpr *Ref = res.Nodes.getNodeAs<DeclRefExpr>("target_ref");
+    const VarDecl *VD = Ref ? llvm::dyn_cast<VarDecl>(Ref->getDecl())
+                            : nullptr;
     if (!VD) VD = res.Nodes.getNodeAs<VarDecl>("target_var");
     if (!VD) return;
-    // position 模式同时挂了 varDecl 与 declRefExpr 两个 matcher：指向同一声明的
-    // 引用与声明会各命中一次（covers 都按声明范围判定），按 canonical decl 去重，
-    // 避免同一变量注入两条重复 edit。
+    // 产品范围（方案 F1）：仅函数局部变量。全局/类成员观测需要 friend 注入等
+    // 有副作用方案（方案 §4.1）、形参观测需插函数体开头，均未支持——
+    // 宁可不插，不能生成破坏语法的 edit。
+    if (!VD->getParentFunctionOrMethod() || isa<ParmVarDecl>(VD)) return;
+    // 位置模式：光标必须落在命中的节点（声明或引用）自身范围内。
+    // 顺序要求：先位置过滤再 seen_ 去重——varDecl 与 declRefExpr 两个 matcher
+    // 对同一变量各回调一次，若先去重，"位置在引用处"的命中会被未过位置的
+    // 声明命中提前占用 seen_ 而整体落空。
+    if (args_.line > 0 &&
+        !locInRange(res, Ref ? Ref->getSourceRange() : VD->getSourceRange()))
+      return;
     if (!seen_.insert(VD->getCanonicalDecl()).second) return;
-    if (args_.line > 0 && !covers(res, VD)) return;
 
     std::string type = VD->getType().getAsString();
     std::string var = VD->getNameAsString();
     ObsFormat fmt = formatForType(type, var);
     std::string line;
+    std::string marker;  // 已注入幂等标记（见 alreadyObserved）
     if (fmt.streamable) {
       line = "std::cout << \"[obs] " + var + "=\" << " + fmt.expr +
              " << std::endl;";
+      marker = "\"[obs] " + var + "=\"";
     } else {
       // 对象等不可直接 <<：打印地址兜底，保证有观测输出
       line = "std::cout << \"[obs] " + var + " (ptr)=\" << (const void*)&" +
              var + " << std::endl;";
+      marker = "\"[obs] " + var + " (ptr)=\"";
     }
-    SourceLocation end = VD->getSourceRange().getEnd().getLocWithOffset(1);
-    col_->inserts.push_back({end, "\n    " + line});
+    // 插入点：声明语句（含 ';'）之后。旧实现插在声明末 token 之后（即
+    // initializer 与 ';' 之间），edit 应用后把 "42" 劈成两半、产生非法代码。
+    SourceLocation at = insertLocAfterDecl(res, VD);
+    if (at.isInvalid()) return;
+    // 幂等（方案 §3.4）：插入点后两行内已有该变量的 [obs] 观测行则跳过，
+    // 重复调用不叠加。
+    if (alreadyObserved(res, at, marker)) return;
+    col_->inserts.push_back({at, "\n    " + line});
   }
 
-  // 位置过滤：传入的 position (line,col) 必须落在该变量的声明/引用范围上。
-  // 命中返回 true；未给 position 时不过滤（此时由 matcher 的 hasName 收敛）。
-  bool covers(const MatchFinder::MatchResult &res, const VarDecl *VD) const {
+  // 插入点：优先声明语句结尾（DeclStmt，含 ';'）之后；for/if/switch/while
+  // 头部声明的观测日志插到复合语句体开头（插在头部内会破坏语法）；体不是
+  // 复合语句（无大括号）时放弃——插入会把原语句挤出循环/分支作用域。
+  SourceLocation insertLocAfterDecl(const MatchFinder::MatchResult &res,
+                                    const VarDecl *VD) const {
     SourceManager &SM = res.Context->getSourceManager();
-    SourceLocation b = SM.getSpellingLoc(VD->getSourceRange().getBegin());
-    SourceLocation e = SM.getSpellingLoc(VD->getSourceRange().getEnd());
+    const LangOptions &LO = res.Context->getLangOpts();
+    auto parents = res.Context->getParents(*VD);
+    const DeclStmt *DS = parents.empty() ? nullptr : parents[0].get<DeclStmt>();
+    if (DS) {
+      const Stmt *body = nullptr;
+      auto gp = res.Context->getParents(*DS);
+      if (!gp.empty()) {
+        if (const auto *F = gp[0].get<ForStmt>())
+          body = F->getBody();
+        else if (const auto *I = gp[0].get<IfStmt>())
+          body = I->getThen();
+        else if (const auto *S = gp[0].get<SwitchStmt>())
+          body = S->getBody();
+        else if (const auto *W = gp[0].get<WhileStmt>())
+          body = W->getBody();
+      }
+      if (body) {
+        if (!isa<CompoundStmt>(body)) return SourceLocation();
+        return Lexer::getLocForEndOfToken(body->getBeginLoc(), 0, SM, LO);
+      }
+      return Lexer::getLocForEndOfToken(DS->getEndLoc(), 0, SM, LO);
+    }
+    // 无 DeclStmt（理论上函数局部都有）：退回声明末 token 之后
+    return VD->getSourceRange().getEnd().getLocWithOffset(1);
+  }
+
+  // 幂等探测：插入点后的源码（至多两行）已含该变量的观测标记则视为已注入。
+  bool alreadyObserved(const MatchFinder::MatchResult &res,
+                       SourceLocation at, const std::string &marker) const {
+    if (!at.isValid() || marker.empty()) return false;
+    SourceManager &SM = res.Context->getSourceManager();
+    bool invalid = false;
+    const char *data = SM.getCharacterData(at, &invalid);
+    if (invalid || !data) return false;
+    // clang MemoryBuffer 保证 NUL 结尾；窗口取 256 字符/两个换行足够覆盖
+    // 注入文本 "\n    std::cout << \"[obs] var=...\""
+    int newlines = 0;
+    for (size_t i = 0; i < 256 && data[i] != '\0'; ++i) {
+      if (data[i] == '\n' && ++newlines > 2) break;
+      if (data[i] == marker[0] &&
+          std::strncmp(data + i, marker.c_str(), marker.size()) == 0)
+        return true;
+    }
+    return false;
+  }
+
+  // 位置过滤：传入的 position (line,col) 必须落在范围上（含边界）。
+  // 命中返回 true；未给 position 时不过滤（此时由 matcher 的 hasName 收敛）。
+  bool locInRange(const MatchFinder::MatchResult &res, SourceRange R) const {
+    SourceManager &SM = res.Context->getSourceManager();
+    const LangOptions &LO = res.Context->getLangOpts();
+    SourceLocation b = SM.getSpellingLoc(R.getBegin());
+    SourceLocation e = SM.getSpellingLoc(R.getEnd());
+    if (b.isInvalid() || e.isInvalid()) return false;
     unsigned bl = SM.getSpellingLineNumber(b);
     unsigned bcl = SM.getSpellingColumnNumber(b);
     unsigned el = SM.getSpellingLineNumber(e);
     unsigned ecl = SM.getSpellingColumnNumber(e);
+    // clang 的 SourceRange::getEnd() 指向末 token **起点**：单 token 范围
+    // （如 DeclRefExpr 的变量名）只有首字符能命中。扩到末 token 结束处，
+    // 使"光标落在 token 任意位置"都算命中。
+    SourceLocation e2 = Lexer::getLocForEndOfToken(e, 0, SM, LO);
+    if (e2.isValid()) {
+      el = SM.getSpellingLineNumber(e2);
+      ecl = SM.getSpellingColumnNumber(e2) - 1;
+    }
     unsigned L = static_cast<unsigned>(args_.line);
     unsigned C = static_cast<unsigned>(args_.col);
     if (L < bl || L > el) return false;
@@ -181,8 +296,6 @@ class EngineAction : public ASTFrontendAction {
 
   void EndSourceFileAction() override {
     SourceManager &SM = getCompilerInstance().getSourceManager();
-    const LangOptions &LO = getCompilerInstance().getLangOpts();
-    (void)LO;
     for (auto &p : col_.inserts) {
       TextEdit e;
       e.start.line = SM.getSpellingLineNumber(p.first);
@@ -215,16 +328,26 @@ struct EngineFactory : FrontendActionFactory {
   std::string *err_;
 };
 
-// 把单条条目写为临时 compile_commands.json，避免 loadFromFile 全量解析 1GB
+// 把单条条目写为临时 compile_commands.json，避免 loadFromFile 全量解析 1GB。
+// 不用 std::tmpnam：可预测文件名有竞态与符号链接攻击面（且 MSVC C4996），
+// 改用 temp 目录 + 进程 PID + 进程内序号构造唯一名。
 std::string writeSingleEntryDb(const std::string &entryJson) {
-  char buf[L_tmpnam];
-  const char *name = std::tmpnam(buf);
-  std::string tmp = name ? std::string(name) + ".json" : "/tmp/logc_db.json";
-  std::FILE *f = std::fopen(tmp.c_str(), "w");
-  if (f) {
-    std::fprintf(f, "[\n%s\n]\n", entryJson.c_str());
-    std::fclose(f);
-  }
+  static std::atomic<unsigned> seq{0};
+#ifdef _WIN32
+  const unsigned pid = static_cast<unsigned>(_getpid());
+#else
+  const unsigned pid = static_cast<unsigned>(getpid());
+#endif
+  std::error_code ec;
+  std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+  if (ec) dir = ".";
+  std::filesystem::path p = dir / ("logc_cc_" + std::to_string(pid) + "_" +
+                                   std::to_string(seq++) + ".json");
+  std::string tmp = p.string();
+  std::FILE *f = std::fopen(tmp.c_str(), "wb");
+  if (!f) return {};
+  std::fprintf(f, "[\n%s\n]\n", entryJson.c_str());
+  std::fclose(f);
   return tmp;
 }
 
@@ -291,6 +414,10 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
     return false;
   }
   std::string tmpDb = writeSingleEntryDb(entry);
+  if (tmpDb.empty()) {
+    if (err) *err = "cannot create temp compile db";
+    return false;
+  }
   std::string loadErr;
   std::unique_ptr<CompilationDatabase> db =
       JSONCompilationDatabase::loadFromFile(tmpDb, loadErr,
