@@ -39,6 +39,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Cache ccache
+        # 仅 Linux 启用：ccache 作为 MSVC launcher 在 Windows+Ninja 下不稳定
+        # （llvm-tblgen 运行时报入口点找不到 0xC0000139），Windows 改为每次冷编。
+        if: runner.os != 'Windows'
         uses: actions/cache@v4
         with:
           path: ${{ matrix.cache_path }}
@@ -62,7 +65,11 @@ jobs:
       - name: Configure
         # 统一 Ninja generator：CI 输出带 [N/M] 编译计数（VS generator 在 CI 无计数），
         # 且 Ninja 单 config（exe 输出到 build/，不走 build/Release/）。
-        run: cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        # ccache 仅 Linux（Windows+Ninja+MSVC 下 ccache 不稳定，见 Cache ccache 注释）。
+        run: |
+          CCACHE_FLAG=""
+          if [ "$RUNNER_OS" != "Windows" ]; then CCACHE_FLAG="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"; fi
+          cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release $CCACHE_FLAG
 
       - name: Build logcommenter
         # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
