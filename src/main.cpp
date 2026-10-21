@@ -57,7 +57,7 @@ int main(int argc, const char **argv) {
 
   std::vector<TextEdit> edits;
   std::string err;
-  if (!runClangEngine(a, a.compileJson, &edits, &err)) {
+  if (!runClangEngine(a, a.compileJson, argv[0], &edits, &err)) {
     std::fprintf(stderr, "error: %s\n", err.c_str());
     return 1;
   }

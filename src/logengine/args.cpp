@@ -88,12 +88,17 @@ std::vector<std::string> stripSourceFileArg(const std::vector<std::string> &args
   std::string fnBase = baseName(fn);
   std::vector<std::string> out;
   out.reserve(args.size());
+  bool keptSource = false;
   for (auto &a : args) {
-    // 归一后相等，或文件名相同且是源文件 → 视为 command 里重复的源文件 token，剥离。
+    // MSVC(CMake) 的 command 常自带源文件，ClangTool 又会注入一次，导致重复输入 + /Fo 冲突。
+    // "归一相等或文件名相同"即视为重复源文件：**保留一个**（Clang 必须要有输入文件），
+    // 其余副本剥离。若 command 里只有一个源文件则原样保留。
     std::string na = normSlash(a);
-    bool dupSource = !fn.empty() && isSourceFile(a) &&
-                     (na == fn || baseName(na) == fnBase);
-    if (!dupSource) out.push_back(a);
+    bool match = !fn.empty() && isSourceFile(a) &&
+                 (na == fn || baseName(na) == fnBase);
+    if (match && keptSource) continue;  // 多余的源文件副本 → 剥离
+    if (match) keptSource = true;
+    out.push_back(a);
   }
   return out;
 }

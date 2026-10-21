@@ -10,8 +10,11 @@
 namespace logc {
 
 // 对 file 执行 args 指定的动作；编译参数从 compileJson（compile_commands.json）
-// 中按偏移索引精准取一条，不加载全量。成功返回 true 并把改动写入 edits。
+// 中按偏移索引精准取一条，不加载全量。exePath 为当前可执行文件路径（argv[0]），
+// 用于运行时定位随包分发的 clang 内置头目录（clang-headers），不依赖构建机路径。
+// 成功返回 true 并把改动写入 edits。
 bool runClangEngine(const CliArgs &args, const std::string &compileJson,
+                    const std::string &exePath,
                     std::vector<TextEdit> *edits, std::string *err);
 
 }  // namespace logc

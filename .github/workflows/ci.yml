@@ -65,6 +65,9 @@ jobs:
       - name: E2E smoke (comment + inject)
         run: |
           set -e
+          # exe 运行时按 argv[0] 同目录定位 clang-headers：把内置头复制到 exe 旁边
+          mkdir -p build/clang-headers
+          cp -r build/_deps/llvm_project-src/clang/lib/Headers/* build/clang-headers/
           # --comment：sample.cpp 中含 pengtest 的日志应被注释（输出 TextEdit "// "）
           ./build/logcommenter --comment --file src/sample.cpp \
             --compile-commands build/compile_commands.json > /tmp/e2e_comment.json

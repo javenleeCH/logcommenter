@@ -95,11 +95,18 @@ jobs:
 
       - name: Package zip (platform-prefixed)
         run: |
+          # exe 与 clang 内置头同包分发：exe 运行时按 argv[0] 同目录定位 clang-headers
+          # （resource-dir 不依赖构建机 bake 路径）。
+          mkdir -p package/clang-headers
+          cp -r build/_deps/llvm_project-src/clang/lib/Headers/* package/clang-headers/ 2>/dev/null || true
           if [ "$RUNNER_OS" = "Windows" ]; then
-            powershell -Command "Compress-Archive -Path build/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
+            cp build/logcommenter.exe package/logcommenter.exe
+            powershell -Command "Compress-Archive -Path (Get-ChildItem -Path 'package') -DestinationPath ${{ matrix.artifact }}.zip -Force"
           else
-            (cd build && zip ../${{ matrix.artifact }}.zip logcommenter)
+            cp build/logcommenter package/logcommenter
+            (cd package && zip -r ../${{ matrix.artifact }}.zip .)
           fi
+          rm -rf package
         shell: bash
 
       - name: Upload artifact

@@ -63,33 +63,36 @@ TEST_CASE(parse_position_invalid) {
 }
 
 TEST_CASE(args_strip_duplicate_source) {
-  // MSVC(CMake) compile_commands：command 自带源文件路径 + /Fo 输出参数。
-  // 用户传正斜杠绝对路径 --file，command 里是反斜杠绝对路径 → 应剥离重复源文件 token，
-  // 保留 /Fo 与其余编译选项。
+  // MSVC(CMake) compile_commands：command 自带源文件路径 + /Fo 输出参数，ClangTool 又会注入
+  // 一次源文件（可能换斜杠/绝对形式）→ 出现重复源文件。应剥离**多余的副本、保留一个**，
+  // 否则"no input files"（全剥光）或"cannot specify /Fo when compiling multiple source files"。
   std::vector<std::string> in = {
       "cl.exe",
       "/nologo",
       "/c",
-      "/FoCMakeFiles\\sample.dir\\src\\sample.cpp.obj",
+      "/FoCMakeFiles\\sample.dir\\src\\main.cpp.obj",
       "/Iinc",
-      "D:\\codeSpace\\CDir\\vkdemo\\src\\main.cpp"};
+      "D:\\codeSpace\\CDir\\vkdemo\\src\\main.cpp",   // command 里的（反斜杠绝对）
+      "D:/codeSpace/CDir/vkdemo/src/main.cpp"};        // ClangTool 注入的（正斜杠绝对）
   auto out = stripSourceFileArg(in, "D:/codeSpace/CDir/vkdemo/src/main.cpp");
-  // 源文件 token 已剥离：任何参数不应再以 main.cpp 结尾
-  for (auto &s : out)
-    EXPECT_FALSE(s.size() >= 8 && s.compare(s.size() - 8, 8, "main.cpp") == 0);
-  bool hasFo = false, hasInc = false;
+  // 保留一个 main.cpp，剥离另一个副本 → 7 - 1 = 6 项
+  EXPECT_EQ(static_cast<int>(out.size()), 6);
+  bool hasFo = false, hasInc = false, keptSrc = false;
   for (auto &s : out) {
     if (s.rfind("/Fo", 0) == 0) hasFo = true;
     if (s == "/Iinc") hasInc = true;
+    if (s.size() >= 8 && s.compare(s.size() - 8, 8, "main.cpp") == 0) keptSrc = true;
   }
   EXPECT_TRUE(hasFo);
   EXPECT_TRUE(hasInc);
-  // 剩 cl.exe /nologo /c /Fo... /Iinc = 5 项
-  EXPECT_EQ(static_cast<int>(out.size()), 5);
-  // 相对路径 --file（.\\src\\main.cpp）也应按文件名剥离
+  EXPECT_TRUE(keptSrc);  // 必须仍有一个源文件输入
+  // 相对路径 --file（.\\src\\main.cpp）也按文件名剥离多余副本、保留一个
   auto out2 = stripSourceFileArg(in, ".\\src\\main.cpp");
-  EXPECT_EQ(static_cast<int>(out2.size()), 5);
-  // 无重复源文件的纯编译选项应原样保留
-  auto out3 = stripSourceFileArg({"g++", "-c", "-Iinc"}, "x.cpp");
+  EXPECT_EQ(static_cast<int>(out2.size()), 6);
+  // 单个源文件（无重复）应原样保留，不能被剥光
+  auto out3 = stripSourceFileArg({"cl", "/c", "src\\main.cpp"}, "src/main.cpp");
   EXPECT_EQ(static_cast<int>(out3.size()), 3);
+  // 无源文件的纯编译选项原样保留
+  auto out4 = stripSourceFileArg({"g++", "-c", "-Iinc"}, "x.cpp");
+  EXPECT_EQ(static_cast<int>(out4.size()), 3);
 }

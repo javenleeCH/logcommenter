@@ -222,37 +222,25 @@ std::string writeSingleEntryDb(const std::string &entryJson) {
   return tmp;
 }
 
-// 静态链接的自定义可执行无法从 argv[0] 推导 clang resource dir（内置头所在），
-// 这里在 LLVM 构建目录下探测真实路径：<bin>/lib/clang/<ver>/include/stddef.h。
-// 找不到返回空串，并把诊断信息写入 err。
-std::string findResourceDir(std::string *err) {
+// 运行时基于可执行文件所在目录定位 clang 内置头：随包分发 <exeDir>/clang-headers。
+// resource-dir 设为 exeDir（一定存在，满足 clang 的校验），真正的内置头由 -isystem
+// 指向 exeDir/clang-headers。不再依赖编译期 bake 的构建机路径（那在本机不存在）。
+std::string findResourceDir(const std::string &exePath, std::string *err) {
   namespace fs = std::filesystem;
-#ifdef LOGC_LLVM_BIN_DIR
-  fs::path lib(LOGC_LLVM_BIN_DIR);
-  lib /= "lib";
-  lib /= "clang";
+  fs::path p(exePath);
+  fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
   std::error_code ec;
-  if (fs::exists(lib)) {
-    for (auto &e : fs::directory_iterator(lib, ec)) {
-      if (!e.is_directory(ec)) continue;
-      fs::path inc = e.path() / "include" / "stddef.h";
-      if (fs::exists(inc)) {
-        return e.path().string();  // <bin>/lib/clang/<ver>
-      }
-    }
-    if (err) *err = "no stddef.h under resource dir candidates: " + lib.string();
-  } else if (err) {
-    *err = "resource dir not found: " + lib.string();
+  if (!fs::exists(dir, ec)) {
+    if (err) *err = "exe dir not found: " + dir.string();
+    return "";
   }
-#else
-  if (err) *err = "LOGC_LLVM_BIN_DIR not defined";
-#endif
-  return "";
+  return dir.string();
 }
 
 }  // namespace
 
 bool runClangEngine(const CliArgs &args, const std::string &compileJson,
+                    const std::string &exePath,
                     std::vector<TextEdit> *edits, std::string *err) {
   if (args.file.empty()) {
     if (err) *err = "missing --file";
@@ -283,20 +271,14 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   std::vector<std::string> sources = {args.file};
   ClangTool tool(*db, sources);
 #ifdef LOGC_LLVM_BIN_DIR
-  // 静态链接的自定义可执行无法从 argv[0] 推导 resource dir，必须显式指定，
+  // 静态链接的自定义可执行无法从 argv[0] 推导 clang resource dir，必须显式指定，
   // 否则 ClangTool 预处理时找不到 clang 内置头（stddef.h 等）。
   {
     namespace fs = std::filesystem;
-    std::string rd = findResourceDir(err);
-    // clang 内置头源码目录（_deps/llvm_project-src/clang/lib/Headers）。
-    // clang-headers 可能没把内置头复制到 build 的 resource dir，这里直接从
-    // 源码树 -isystem 兜底（find 确认该目录存在）。
-    std::string src = LOGC_LLVM_BIN_DIR;
-    if (src.size() >= 6 && src.compare(src.size() - 6, 6, "-build") == 0) {
-      src = src.substr(0, src.size() - 6) + "-src";
-    }
-    std::string headers = src + "/clang/lib/Headers";
-    bool hasHeaders = fs::exists(headers);
+    std::string rd = findResourceDir(exePath, err);
+    // clang 内置头随包分发：<exeDir>/clang-headers（release 打包时复制 clang/lib/Headers）。
+    std::string headers = rd.empty() ? "" : rd + "/clang-headers";
+    bool hasHeaders = !headers.empty() && fs::exists(headers);
     tool.appendArgumentsAdjuster(
         [rd, headers, hasHeaders](const CommandLineArguments &args,
                                   StringRef filename) {
