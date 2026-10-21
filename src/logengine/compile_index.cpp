@@ -47,12 +47,12 @@ size_t findForwardBalanced(const std::string &data, size_t start) {
         esc = false;
       } else if (c == '\\') {
         esc = true;
-      } else if (c == '"') {
+      } else if (c == '\"') {
         in_str = false;
       }
       continue;
     }
-    if (c == '"') {
+    if (c == '\"') {
       in_str = true;
     } else if (c == '{') {
       ++depth;
@@ -87,7 +87,7 @@ std::vector<FileEntry> scanEntries(const std::string &data) {
                      data[j] == '\r' || data[j] == '\n')) {
       ++j;
     }
-    if (j >= n || data[j] != '"') {
+    if (j >= n || data[j] != '\"') {
       i = hit + 6;
       continue;
     }
@@ -102,7 +102,7 @@ std::vector<FileEntry> scanEntries(const std::string &data) {
         esc = false;
       } else if (c == '\\') {
         esc = true;
-      } else if (c == '"') {
+      } else if (c == '\"') {
         break;
       } else {
         path += c;
@@ -140,17 +140,29 @@ bool readFileBytes(const std::string &path, std::string *data,
   return f.good();
 }
 
+// 把路径分隔符统一为 '/'，便于跨平台比较：
+// Windows 上 _fullpath 返回反斜杠，而 compile_commands.json 常为正斜杠，
+// 归一后两者才能精确比较。
+std::string normalizeSlashes(std::string p) {
+  for (auto &c : p) {
+    if (c == '\\') c = '/';
+  }
+  return p;
+}
+
 // 把路径解析为绝对路径（基于当前工作目录），失败返回空串。
 // 用于把用户传入的相对路径与 compile_commands 中的绝对路径对齐。
+// 返回前归一为 '/' 分隔符。
 std::string absolutePath(const std::string &p) {
+  std::string out;
 #ifdef _WIN32
   char buf[_MAX_PATH];
-  if (_fullpath(buf, p.c_str(), _MAX_PATH)) return std::string(buf);
+  if (_fullpath(buf, p.c_str(), _MAX_PATH)) out = buf;
 #else
   char buf[PATH_MAX];
-  if (realpath(p.c_str(), buf)) return std::string(buf);
+  if (realpath(p.c_str(), buf)) out = buf;
 #endif
-  return "";
+  return normalizeSlashes(out);
 }
 
 }  // namespace
@@ -235,7 +247,7 @@ bool CompileIndex::loadCache(const std::string &cachePath,
     auto val = [&](const std::string &key) -> std::string {
       size_t k = line.find("\"" + key + "\":");
       if (k == std::string::npos) return "";
-      size_t v = line.find('"', k + key.size() + 3);
+      size_t v = line.find('\"', k + key.size() + 3);
       if (v == std::string::npos) return "";
       ++v;
       std::string s;
@@ -246,13 +258,13 @@ bool CompileIndex::loadCache(const std::string &cachePath,
           if (c == 'n') s += '\n';
           else if (c == 't') s += '\t';
           else if (c == 'r') s += '\r';
-          else if (c == '"') s += '"';
+          else if (c == '\"') s += '\"';
           else if (c == '\\') s += '\\';
           else s += c;
           esc = false;
         } else if (c == '\\') {
           esc = true;
-        } else if (c == '"') {
+        } else if (c == '\"') {
           return s;
         } else {
           s += c;
