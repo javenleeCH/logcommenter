@@ -2,27 +2,47 @@
     "version": 8,
     "configurePresets": [
         {
-            "name": "VS",
-            "displayName": "vs-ninja",
-            "description": "Using compilers for Visual Studio 17 2022",
+            "name": "ninja",
+            "displayName": "Ninja (cross-platform)",
+            "description": "Ninja; toolchain auto-detected (cl / gcc / clang), override via CC/CXX env or -DCMAKE_CXX_COMPILER",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
-                "CMAKE_C_COMPILER": "cl.exe",
-                "CMAKE_CXX_COMPILER": "cl.exe",
-                // 1. 配置 ccache：指定编译器启动器为 ccache（跨平台兼容）
-                "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-                "CMAKE_CXX_COMPILER_LAUNCHER": "ccache"
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
             }
         }
     ],
     "buildPresets": [
         {
-            "name": "VS-debug",
-            "displayName": "Visual Studio Community 2022 Release - amd64 - Debug",
-            "configurePreset": "VS",
+            "name": "ninja-debug",
+            "displayName": "Debug",
+            "configurePreset": "ninja",
             "configuration": "Debug"
+        },
+        {
+            "name": "ninja-release",
+            "displayName": "Release",
+            "configurePreset": "ninja",
+            "configuration": "Release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "ninja",
+            "displayName": "run unit tests",
+            "configurePreset": "ninja",
+            "output": { "outputOnFailure": true }
+        }
+    ],
+    "workflowPresets": [
+        {
+            "name": "all",
+            "displayName": "configure + build + test (one command)",
+            "steps": [
+                { "type": "configure", "name": "ninja" },
+                { "type": "build", "name": "ninja-debug" },
+                { "type": "test", "name": "ninja" }
+            ]
         }
     ]
 }
