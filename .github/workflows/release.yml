@@ -29,7 +29,7 @@ jobs:
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
             artifact: logcommenter-windows-x86_64
-            exe: build/logcommenter.exe
+            exe: build/Release/logcommenter.exe
             cache_path: C:\Users\runneradmin\AppData\Local\ccache
             install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
@@ -63,20 +63,22 @@ jobs:
         run: ${{ matrix.install }}
 
       - name: Configure
-        # 统一 Ninja generator：CI 输出带 [N/M] 编译计数（VS generator 在 CI 无计数），
-        # 且 Ninja 单 config（exe 输出到 build/，不走 build/Release/）。
-        # ccache 仅 Linux（Windows+Ninja+MSVC 下 ccache 不稳定，见 Cache ccache 注释）。
+        # Linux: Ninja + ccache（有 [N/M] 计数且稳定）
+        # Windows: 退回 VS generator——Ninja+MSVC 链接出的 llvm-min-tblgen.exe 运行报
+        #   0xC0000139（入口点找不到），经排查与 ccache 无关，是 Ninja+MSVC 本身问题。
         run: |
-          CCACHE_FLAG=""
-          if [ "$RUNNER_OS" != "Windows" ]; then CCACHE_FLAG="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"; fi
-          cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release $CCACHE_FLAG
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          fi
         shell: bash
 
       - name: Build logcommenter
         # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build build --target logcommenter --parallel 2
+            cmake --build build --target logcommenter --config Release --parallel 2
           else
             cmake --build build --target logcommenter --parallel $(nproc)
           fi
@@ -85,7 +87,7 @@ jobs:
       - name: Package zip (platform-prefixed)
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            powershell -Command "Compress-Archive -Path build/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
+            powershell -Command "Compress-Archive -Path build/Release/logcommenter.exe -DestinationPath ${{ matrix.artifact }}.zip -Force"
           else
             (cd build && zip ../${{ matrix.artifact }}.zip logcommenter)
           fi
