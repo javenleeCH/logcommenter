@@ -75,7 +75,7 @@ jobs:
             preset: windows-msvc
             build_dir: build/windows-msvc
             exe: logcommenter.exe
-            jobs: "2"
+            jobs: "4"
             install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
     steps:
@@ -97,10 +97,8 @@ jobs:
       - name: Enable MSVC dev environment (Ninja on Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
-      # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject
-      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
-      # 用 restore/save 拆分（与 ccache 一致），避免 combined actions/cache 与 restore/save
-      # 混用导致 post-step 不保存。
+      # LLVM 源码缓存同样用 restore/save 拆分（避免 combined actions/cache 与 restore/save
+      # 混用导致 post-step 不保存）。CPM 看到源码已存在则跳过下载/解压。
       - name: Restore LLVM source cache
         id: llvm-cache
         uses: actions/cache/restore@v4
@@ -117,28 +115,27 @@ jobs:
       - name: Configure (full, preset)
         run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
-      # TEMP DIAGNOSTIC: 用绝对路径跑 exe，验证 readEntry 是否能命中；同时打印原始 sample 条目
-      - name: DIAG test absolute path
-        run: |
-          BD="${{ matrix.build_dir }}"
-          EXE="$BD/${{ matrix.exe }}"
-          ABSSRC="$(pwd)/src/sample.cpp"
-          echo "==== abs src = $ABSSRC ===="
-          echo "==== run exe with ABSOLUTE file path ===="
-          set +e
-          "$EXE" --comment --file "$ABSSRC" --compile-commands "$BD/compile_commands.json" 2>/tmp/abs_err.txt 1>/tmp/abs_out.json
-          echo "exit=$?"
-          echo "--- stderr ---"; cat /tmp/abs_err.txt
-          echo "--- stdout head ---"; head -c 600 /tmp/abs_out.json; echo
-          echo "==== run exe with RELATIVE file path ===="
-          "$EXE" --comment --file src/sample.cpp --compile-commands "$BD/compile_commands.json" 2>/tmp/rel_err.txt 1>/dev/null
-          echo "exit=$?"; echo "--- stderr ---"; cat /tmp/rel_err.txt
-        shell: bash
       - name: Build full tool
         run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
         shell: bash
       - name: Show ccache stats
         run: ccache --show-stats --verbose
+        shell: bash
+      # TEMP DIAGNOSTIC（build 之后）：用 Windows 原生绝对路径 vs 相对路径跑 exe，
+      # 验证 readEntry 能否命中 sample.cpp
+      - name: DIAG test file path resolution
+        run: |
+          BD="${{ matrix.build_dir }}"
+          EXE="$BD/${{ matrix.exe }}"
+          WINABS=$(cygpath -w "$(pwd)/src/sample.cpp")
+          echo "==== win abs = $WINABS ===="
+          set +e
+          echo "==== ABSOLUTE path ===="
+          "$EXE" --comment --file "$WINABS" --compile-commands "$BD/compile_commands.json" 2>/tmp/abs_err.txt 1>/tmp/abs_out.json
+          echo "exit=$?"; echo "stderr:"; cat /tmp/abs_err.txt; echo "stdout head:"; head -c 500 /tmp/abs_out.json; echo
+          echo "==== RELATIVE path ===="
+          "$EXE" --comment --file src/sample.cpp --compile-commands "$BD/compile_commands.json" 2>/tmp/rel_err.txt 1>/dev/null
+          echo "exit=$?"; echo "stderr:"; cat /tmp/rel_err.txt
         shell: bash
       # 只在本次未命中 ccache 时保存；命中时已有缓存，跳过避免 key 冲突。always() 保证
       # 即使后续 E2E 失败，本次冷构建也已落盘。
