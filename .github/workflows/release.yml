@@ -1,5 +1,5 @@
 # 发布工作流：多平台现场编译 LLVM 23 静态链接，构建 logcommenter 可执行文件，
-# 并附加到指定 release tag。各平台启用 ccache（ccache 4.x 支持 MSVC），冷编一次后
+# 并附加到指定 release tag。Linux 用 ccache、Windows/MSVC 用 sccache，冷编一次后
 # 后续 release 增量构建。macOS 暂不打包（现场编译 LLVM 冷编过久），配置保留可随时补。
 # 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
 name: release
@@ -26,35 +26,52 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            compiler: gcc
             artifact: logcommenter-linux-x86_64
             preset: unix-default
             build_dir: build/unix-default
             exe: logcommenter
+            jobs: "$(nproc)"
+            launcher: ccache
+            cache_dir: ${{ github.workspace }}/.ccache
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
+            compiler: msvc
             artifact: logcommenter-windows-x86_64
             preset: windows-msvc
             build_dir: build/windows-msvc
             exe: logcommenter.exe
-            install: choco install ccache -y && choco install ninja -y
+            jobs: "4"
+            launcher: sccache
+            cache_dir: ${{ github.workspace }}/.sccache
+            install: choco install sccache ninja -y
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # 用 $HOME 展开 ccache 目录（无字面绝对路径，跨平台一致）
-      - name: Set ccache dir
-        run: echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+      # 配置编译器缓存环境（仅当前平台会生效的那一个）
+      - name: Setup compiler cache env
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
+            echo "SCCACHE_CACHE_SIZE=20G" >> "$GITHUB_ENV"
+          else
+            echo "CCACHE_DIR=${{ github.workspace }}/.ccache" >> "$GITHUB_ENV"
+            echo "CCACHE_MAXSIZE=5G" >> "$GITHUB_ENV"
+            echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+            echo "CCACHE_BASEDIR=${{ github.workspace }}" >> "$GITHUB_ENV"
+            echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
+            echo "CCACHE_SLOPPINESS=time_macros,pch_defines,include_file_mtime,include_file_ctime" >> "$GITHUB_ENV"
+          fi
 
-      - name: Cache ccache
+      - name: Cache compiler cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
-          # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
-          # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
-          key: ccache-release-${{ matrix.os }}-llvm-23.1.3
-          # restore-keys 只在极端情况下兜底恢复，平时 key 固定即可命中主缓存
+          path: ${{ matrix.cache_dir }}
+          key: ${{ runner.os }}-${{ matrix.compiler }}-llvm-23.1.3
           restore-keys: |
-            ccache-release-${{ matrix.os }}-
+            ${{ runner.os }}-${{ matrix.compiler }}-
 
       # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject
       # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
@@ -66,7 +83,7 @@ jobs:
             ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
           key: llvm-src-${{ matrix.os }}-23.1.3
 
-      - name: Install ccache + ninja
+      - name: Install compiler cache + ninja
         run: ${{ matrix.install }}
 
       # Ninja generator 不像 VS generator 会自动定位 MSVC，需显式加载 MSVC 开发环境
@@ -77,19 +94,36 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: Configure
-        # 统一走 CMake preset（ubuntu=unix-default 系统工具链，windows=windows-msvc MSVC cl.exe），
-        # Windows 环境由上方 msvc-dev-cmd 补齐。CMAKE_BUILD_TYPE 由 preset 固定为 Release。
-        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
-
-      - name: Build logcommenter
-        # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
+        # CMAKE_BUILD_TYPE 由 preset 固定为 Release；C/C++ launcher 都设上以覆盖 LLVM 的 C 源
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel 2
+            cmake --preset ${{ matrix.preset }} \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
           else
-            cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel $(nproc)
+            cmake --preset ${{ matrix.preset }} \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache
           fi
+
+      - name: Build logcommenter
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
+        shell: bash
+
+      - name: Show compiler cache stats
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            sccache --show-stats
+          else
+            ccache --show-stats --verbose
+          fi
+
+      # sccache 常驻 daemon 会把缓存缓存在内存，actions/cache 保存前必须 stop 落盘
+      - name: Stop sccache server (flush to disk)
+        if: always() && runner.os == 'Windows'
+        run: sccache --stop-server || true
         shell: bash
 
       - name: Package zip (platform-prefixed)
