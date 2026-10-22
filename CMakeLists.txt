@@ -1,65 +1,22 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.21)
 
-# ---- 编译器选择（须在 project() 之前设置才生效）----
-#   用法: cmake -DLOGC_COMPILER=auto|msvc|clang-cl|clang|gcc ...
-#   msvc / clang-cl 需在 MSVC 开发环境（vcvarsall / msvc-dev-cmd）中运行；
-#   auto 为默认：用环境 CC/CXX 或系统默认，也可直接 -DCMAKE_CXX_COMPILER=...
-set(LOGC_COMPILER "auto" CACHE STRING "Compiler preset: auto|msvc|clang-cl|clang|gcc")
-if(LOGC_COMPILER STREQUAL "msvc")
-  set(CMAKE_C_COMPILER "cl.exe" CACHE STRING "C compiler" FORCE)
-  set(CMAKE_CXX_COMPILER "cl.exe" CACHE STRING "C++ compiler" FORCE)
-  # 链接器跟随：MSVC 用 link.exe。必须显式覆盖——否则换编译器时
-  # CMakeCache 残留的 CMAKE_LINKER=ld 会让 cl.exe 用 GNU ld 链接而失败
-  # （cl / is not able to compile a simple test program ... used ld）
-  set(CMAKE_LINKER "link.exe" CACHE STRING "Linker" FORCE)
-elseif(LOGC_COMPILER STREQUAL "clang-cl")
-  set(CMAKE_C_COMPILER "clang-cl.exe" CACHE STRING "C compiler" FORCE)
-  set(CMAKE_CXX_COMPILER "clang-cl.exe" CACHE STRING "C++ compiler" FORCE)
-  # clang-cl 是 MSVC 兼容前端，链接器同样是 link.exe
-  set(CMAKE_LINKER "link.exe" CACHE STRING "Linker" FORCE)
-elseif(LOGC_COMPILER STREQUAL "clang")
-  set(CMAKE_C_COMPILER "clang" CACHE STRING "C compiler" FORCE)
-  set(CMAKE_CXX_COMPILER "clang++" CACHE STRING "C++ compiler" FORCE)
-  # Unix：链接交给编译器驱动（clang++ 调 ld/lld），清掉可能残留的 CMAKE_LINKER
-  unset(CMAKE_LINKER CACHE)
-elseif(LOGC_COMPILER STREQUAL "gcc")
-  set(CMAKE_C_COMPILER "gcc" CACHE STRING "C compiler" FORCE)
-  set(CMAKE_CXX_COMPILER "g++" CACHE STRING "C++ compiler" FORCE)
-  unset(CMAKE_LINKER CACHE)
-elseif(NOT LOGC_COMPILER STREQUAL "auto")
-  message(FATAL_ERROR "Unknown LOGC_COMPILER: ${LOGC_COMPILER} (auto|msvc|clang-cl|clang|gcc)")
-endif()
-
-# 链接器选择（可选）：默认空 = CMake 按编译器自动选择（MSVC→link.exe，GCC/Clang→编译器驱动），
-# 一般不需要手动指定。仅在要强制特定链接器时使用：
-#   cmake -DLOGC_LINKER=lld-link.exe   # Windows（LLVM lld 的 MSVC 兼容前端）
-#   cmake -DLOGC_LINKER=ld.lld         # Unix（直接指定可执行文件）
-# Unix 上更推荐经编译器驱动切换：-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
-set(LOGC_LINKER "" CACHE STRING "Force linker (empty=auto): lld-link.exe / ld.lld / <path>")
-if(LOGC_LINKER)
-  set(CMAKE_LINKER "${LOGC_LINKER}" CACHE STRING "Linker" FORCE)
-endif()
-
-project(logcommenter)
+project(logcommenter LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
   add_compile_options(/utf-8)
 endif()
 
-# 架构分层：
-#  - 纯逻辑核心（logengine/）零 Clang 依赖，本机/快速可编译测试。
-#  - AST 引擎 + CLI（clang/engine_clang + main）依赖 Clang/LibTooling，
-#    由 LOGCOMMENTER_BUILD_AST 控制；统一用 CPM 现场编译 llvm-project，
-#    CMake 保持简单，不依赖系统 LLVM。
+# 分层：
+#  - 纯逻辑核心 logengine/ 零 Clang 依赖，可快速编译测试；
+#  - AST 引擎 + CLI 依赖 Clang/LibTooling，用 CPM 现场编译 llvm-project。
+# 编译器与构建类型由 CMakePresets.json 控制（windows-msvc / unix-default），不在此处硬编码。
 option(LOGCOMMENTER_BUILD_AST "Build AST engine + CLI (needs Clang/LibTooling)" ON)
-
-# 网络/TLS 选项：代理或自签证书环境下，下载 GitHub 资源可禁用 TLS 校验。
-#   用法: cmake -DLOGC_DISABLE_SSL_CPM=ON -DLOGC_DISABLE_SSL_LLVM=ON ...
-option(LOGC_DISABLE_SSL_CPM "Disable TLS verification when downloading CPM.cmake" OFF)
-option(LOGC_DISABLE_SSL_LLVM "Disable TLS verification when downloading llvm-project (CPM)" OFF)
+# 代理或自签证书环境下下载 llvm-project 时可禁用 TLS 校验。
+option(LOGC_DISABLE_SSL "Disable TLS verification when downloading dependencies" OFF)
 
 # ---- 1. core library (zero Clang deps) ----
 add_library(logcommenter_core
@@ -82,81 +39,49 @@ add_executable(logcommenter_tests
 target_link_libraries(logcommenter_tests PRIVATE logcommenter_core)
 add_test(NAME core_tests COMMAND logcommenter_tests)
 
-# ---- 3. AST engine + CLI ----
+# ---- 3. AST engine + CLI (Clang/LibTooling via CPM) ----
 if(LOGCOMMENTER_BUILD_AST)
-
-  # ---- AST 引擎统一走 CPM 现场编译 llvm-project（保持 CMake 简单）----
-  # CPM.cmake 兜底下载：仓库内缺失时自动拉取 get_cpm.cmake
-  # （LOGC_DISABLE_SSL_CPM=ON 可禁用 TLS 校验）
-  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
-    message(STATUS "Downloading CPM.cmake ...")
-    file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-    if(LOGC_DISABLE_SSL_CPM)
-      file(DOWNLOAD
-        "https://github.com/cpm-cmake/CPM.cmake/releases/latest/download/get_cpm.cmake"
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake"
-        TLS_VERIFY OFF
-        STATUS _cpm_dl_status)
-    else()
-      file(DOWNLOAD
-        "https://github.com/cpm-cmake/CPM.cmake/releases/latest/download/get_cpm.cmake"
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake"
-        STATUS _cpm_dl_status)
-    endif()
-    if(NOT _cpm_dl_status EQUAL 0)
-      message(FATAL_ERROR "Failed to download CPM.cmake: ${_cpm_dl_status}")
-    endif()
-  endif()
   include(cmake/CPM.cmake)
-    # LLVM 下载 TLS 控制：CPM 内部用 file(DOWNLOAD)，遵循 CPM_DOWNLOAD_TLS_VERIFY。
-    # LOGC_DISABLE_SSL_LLVM=ON 时先关闭、下载后恢复，不影响其他下载。
-    set(_logc_prev_cpm_tls "${CPM_DOWNLOAD_TLS_VERIFY}")
-    if(LOGC_DISABLE_SSL_LLVM)
-      set(CPM_DOWNLOAD_TLS_VERIFY OFF)
-    endif()
-    CPMAddPackage(
-      NAME LLVM_PROJECT
-      URL https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-23.1.3.zip
-      URL_HASH SHA256=2198f03ae4eb6bc6b71cd2a79c60ea9f9ce6bc6bc3a8dcf9e29861f425236746
-      DOWNLOAD_ONLY YES
-    )
-    if(LOGC_DISABLE_SSL_LLVM)
-      set(CPM_DOWNLOAD_TLS_VERIFY "${_logc_prev_cpm_tls}")
-    endif()
-    set(LLVM_ENABLE_PROJECTS "clang" CACHE STRING "启用 Clang")
-    set(LLVM_TARGETS_TO_BUILD "X86" CACHE STRING "目标架构（可选）")
-    set(LLVM_INCLUDE_TESTS OFF CACHE BOOL "不构建测试")
-    set(LLVM_INCLUDE_EXAMPLES OFF CACHE BOOL "不构建示例")
-    set(LLVM_BUILD_TOOLS OFF CACHE BOOL "只构建库")
-    set(LLVM_BUILD_UTILS OFF CACHE BOOL "")
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "静态链接")
-    set(LLVM_ENABLE_RTTI ON CACHE BOOL "Clang AST 需要 RTTI")
-    set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "启用调试断言")
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "构建类型")
-    # EXCLUDE_FROM_ALL：LLVM/Clang 所有 target 不进默认 all 目标，避免 `cmake --build`
-    # 触发全量编译；只有被 logcommenter_engine 依赖的库才会被构建。
-    add_subdirectory(${LLVM_PROJECT_SOURCE_DIR}/llvm ${LLVM_PROJECT_BINARY_DIR} EXCLUDE_FROM_ALL)
 
-    add_library(logcommenter_engine src/clang/engine_clang.cpp)
-    # 运行时给 ClangTool 指定 resource dir（静态链接无法从 argv[0] 推导）
-    target_compile_definitions(logcommenter_engine PRIVATE
-      LOGC_LLVM_BIN_DIR="${LLVM_PROJECT_BINARY_DIR}")
-    target_include_directories(logcommenter_engine PRIVATE
-      ${LLVM_PROJECT_SOURCE_DIR}/llvm/include
-      ${LLVM_PROJECT_SOURCE_DIR}/clang/include
-      ${LLVM_PROJECT_BINARY_DIR}/include
-      ${LLVM_PROJECT_BINARY_DIR}/tools/clang/include
-      src)
-    target_link_directories(logcommenter_engine PRIVATE ${LLVM_LIBRARY_DIRS})
-    target_link_libraries(logcommenter_engine PUBLIC logcommenter_core
-      clangTooling clangASTMatchers clangRewrite clangFrontend
-      clangSerialization clangAST clangBasic clangLex)
-    # EXCLUDE_FROM_ALL 使 clang 内置头目标默认不被构建，但 LibTooling 运行时依赖
-    # 它们（resource-dir include/ 下的 stddef.h 等）。注意：LLVM 23 中内置头由
-    # clang-resource-headers 生成到 <LLVM_BINARY_DIR>/lib/clang/<major>/include；
-    # clang-headers 只是 install 组件别名，不产出文件。
-    # 显式依赖，确保 --target logcommenter 时先生成内置头。
-    add_dependencies(logcommenter_engine clang-resource-headers)
+  if(LOGC_DISABLE_SSL)
+    set(CPM_DOWNLOAD_TLS_VERIFY OFF)
+  endif()
+
+  CPMAddPackage(
+    NAME LLVM_PROJECT
+    URL https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-23.1.3.zip
+    URL_HASH SHA256=2198f03ae4eb6bc6b71cd2a79c60ea9f9ce6bc6bc3a8dcf9e29861f425236746
+    DOWNLOAD_ONLY YES
+  )
+
+  set(LLVM_ENABLE_PROJECTS "clang" CACHE STRING "Enable Clang")
+  set(LLVM_TARGETS_TO_BUILD "X86" CACHE STRING "Target architectures")
+  set(LLVM_INCLUDE_TESTS OFF CACHE BOOL "Skip LLVM tests")
+  set(LLVM_INCLUDE_EXAMPLES OFF CACHE BOOL "Skip LLVM examples")
+  set(LLVM_BUILD_TOOLS OFF CACHE BOOL "Libraries only")
+  set(LLVM_BUILD_UTILS OFF CACHE BOOL "Skip utils")
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "Static linking")
+  set(LLVM_ENABLE_RTTI ON CACHE BOOL "RTTI required by Clang AST")
+  set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "Enable debug assertions")
+  # EXCLUDE_FROM_ALL：LLVM/Clang targets 不进默认 all，只构建被依赖的库，
+  # 避免 `cmake --build` 触发全量编译。
+  add_subdirectory(${LLVM_PROJECT_SOURCE_DIR}/llvm ${LLVM_PROJECT_BINARY_DIR} EXCLUDE_FROM_ALL)
+
+  add_library(logcommenter_engine src/clang/engine_clang.cpp)
+  target_compile_definitions(logcommenter_engine PRIVATE
+    LOGC_LLVM_BIN_DIR="${LLVM_PROJECT_BINARY_DIR}")
+  target_include_directories(logcommenter_engine PRIVATE
+    ${LLVM_PROJECT_SOURCE_DIR}/llvm/include
+    ${LLVM_PROJECT_SOURCE_DIR}/clang/include
+    ${LLVM_PROJECT_BINARY_DIR}/include
+    ${LLVM_PROJECT_BINARY_DIR}/tools/clang/include
+    src)
+  target_link_directories(logcommenter_engine PRIVATE ${LLVM_LIBRARY_DIRS})
+  target_link_libraries(logcommenter_engine PUBLIC logcommenter_core
+    clangTooling clangASTMatchers clangRewrite clangFrontend
+    clangSerialization clangAST clangBasic clangLex)
+  # 显式依赖，确保 --target logcommenter 时先生成 clang 内置头（resource-dir include/）。
+  add_dependencies(logcommenter_engine clang-resource-headers)
 
   add_executable(logcommenter src/main.cpp)
   target_link_libraries(logcommenter PRIVATE logcommenter_engine logcommenter_core)

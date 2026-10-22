@@ -27,14 +27,14 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: logcommenter-linux-x86_64
-            preset: ninja
-            build_dir: out/build/ninja
+            preset: unix-default
+            build_dir: build/unix-default
             exe: logcommenter
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
             artifact: logcommenter-windows-x86_64
-            preset: ninja-msvc
-            build_dir: out/build/ninja-msvc
+            preset: windows-msvc
+            build_dir: build/windows-msvc
             exe: logcommenter.exe
             install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
@@ -77,18 +77,18 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: Configure
-        # 统一走 CMake preset（ubuntu=auto 工具链，windows=MSVC cl.exe），Windows 环境
-        # 由上方 msvc-dev-cmd 补齐。
-        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
+        # 统一走 CMake preset（ubuntu=unix-default 系统工具链，windows=windows-msvc MSVC cl.exe），
+        # Windows 环境由上方 msvc-dev-cmd 补齐。CMAKE_BUILD_TYPE 由 preset 固定为 Release。
+        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
 
       - name: Build logcommenter
         # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build --preset ${{ matrix.preset }}-release --target logcommenter --parallel 2
+            cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel 2
           else
-            cmake --build --preset ${{ matrix.preset }}-release --target logcommenter --parallel $(nproc)
+            cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel $(nproc)
           fi
         shell: bash
 

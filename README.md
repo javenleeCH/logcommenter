@@ -77,30 +77,24 @@ src/
 
 ## 构建
 
-依赖 **LLVM/Clang 23.1.3**。默认用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 拉取 `llvm-project` 源码并现场静态编译（Linux / Windows 均可，CI 已全绿）。
+依赖 **LLVM/Clang 23.1.3**。默认用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 拉取 `llvm-project` 源码并现场静态编译（Linux / Windows 均可，CI 已全绿）。编译器和构建类型由 CMake preset 控制，无需手动指定。
 
 ```bash
-# 纯逻辑 core（无 Clang 依赖，快，必绿）
-cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target logcommenter_tests -j$(nproc)
-./build/logcommenter_tests
+# Linux/macOS：unix-default（系统默认 GCC/Clang，Ninja）
+cmake --preset unix-default
+cmake --build build/unix-default --target logcommenter -j$(nproc)
 
-# 完整工具（AST 引擎 + CLI）
-cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target logcommenter -j$(nproc)
-./build/logcommenter --inject --file src/sample.cpp --var total \
-  --compile-commands build/compile_commands.json
+# Windows：windows-msvc（MSVC x64，需在 vcvarsall/msvc-dev-cmd 环境）
+cmake --preset windows-msvc
+cmake --build build/windows-msvc --target logcommenter
 
-# 代理 / 自签证书环境下拉不动 GitHub 时，可单独关掉对应下载的 TLS 校验：
-cmake -S . -B build -DLOGC_DISABLE_SSL_CPM=ON -DLOGC_DISABLE_SSL_LLVM=ON
+# 纯逻辑 core（无 Clang 依赖，快，必绿）：跳过 LLVM，只构建单测
+cmake --preset unix-default -DLOGCOMMENTER_BUILD_AST=OFF
+cmake --build build/unix-default --target logcommenter_tests -j$(nproc)
+./build/unix-default/logcommenter_tests
 
-# 指定编译器（Windows 上同时装了 cl.exe 和 clang-cl.exe 时很有用）：
-cmake -S . -B build -DLOGC_COMPILER=msvc        # MSVC cl.exe（需在 vcvarsall/msvc-dev-cmd 环境）
-cmake -S . -B build -DLOGC_COMPILER=clang-cl    # LLVM clang-cl.exe（同样需 MSVC 头文件环境）
-cmake -S . -B build -DLOGC_COMPILER=clang       # Linux/macOS 的 clang / clang++
-# 换编译器时链接器自动跟随：msvc/clang-cl → link.exe，clang/gcc → 编译器驱动。
-# 若同一 build 目录换过编译器出现 `cl.exe is not able to compile ... used ld` 类报错
-# （CMakeCache 残留旧链接器），删掉 build 目录重新 configure 即可。
+# 代理 / 自签证书环境下拉不动 GitHub 时，可关闭依赖下载的 TLS 校验：
+cmake --preset unix-default -DLOGC_DISABLE_SSL=ON
 ```
 
 构建选项：
@@ -108,10 +102,7 @@ cmake -S . -B build -DLOGC_COMPILER=clang       # Linux/macOS 的 clang / clang+
 | 选项 | 说明 |
 |---|---|
 | `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 Clang）；OFF=仅纯逻辑 core |
-| `LOGC_COMPILER` | 指定编译器：`auto`(默认)/`msvc`(cl.exe)/`clang-cl`(clang-cl.exe)/`clang`/`gcc`；msvc、clang-cl 需在 MSVC 开发环境中运行；**链接器由 CMake 按编译器自动选择，无需手动指定** |
-| `LOGC_LINKER` | 可选，强制指定链接器（默认空=自动）：如 `lld-link.exe` / `ld.lld` / 完整路径；仅换特定链接器时需要 |
-| `LOGC_DISABLE_SSL_CPM` | ON=下载 CPM.cmake 时禁用 TLS 校验（代理/自签证书环境） |
-| `LOGC_DISABLE_SSL_LLVM` | ON=下载 llvm-project 时禁用 TLS 校验 |
+| `LOGC_DISABLE_SSL` | ON=下载依赖（llvm-project）时禁用 TLS 校验（代理/自签证书环境） |
 | `CMAKE_CXX_COMPILER_LAUNCHER=ccache` | 启用 ccache 编译缓存 |
 
 > 首次构建会完整编译 LLVM+Clang，耗时较长（CI 用 ccache + LLVM 源码缓存加速后续）。

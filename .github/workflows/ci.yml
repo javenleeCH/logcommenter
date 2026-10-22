@@ -12,7 +12,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            preset: unix-default
+            build_dir: build/unix-default
+          - os: windows-latest
+            preset: windows-msvc
+            build_dir: build/windows-msvc
+          - os: macos-latest
+            preset: unix-default
+            build_dir: build/unix-default
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,14 +37,14 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
       - name: Configure (core only)
-        run: cmake --preset ninja -DLOGCOMMENTER_BUILD_AST=OFF
+        run: cmake --preset ${{ matrix.preset }} -DLOGCOMMENTER_BUILD_AST=OFF
       - name: Build core tests
-        run: cmake --build --preset ninja-debug --target logcommenter_tests
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter_tests
       - name: Run unit tests
-        run: ctest --test-dir out/build/ninja --output-on-failure
+        run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
 
-  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang，ubuntu 用系统工具链、
-  # windows 用 MSVC cl.exe（对应 ninja-msvc preset），编译并跑全部单测 + E2E。
+  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang；ubuntu 用系统工具链（unix-default）、
+  # windows 用 MSVC cl.exe（windows-msvc），编译并跑全部单测 + E2E。
   # 用 ccache 做编译级缓存：即使某次构建失败，已编译的 LLVM 单元也进 ccache，
   # 下次增量复用，避免每次 push 都全量重编 LLVM。
   ast:
@@ -45,16 +54,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            cfg_preset: ninja
-            build_preset: ninja-release
-            build_dir: out/build/ninja
+            preset: unix-default
+            build_dir: build/unix-default
             exe: logcommenter
             jobs: "$(nproc)"
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
-            cfg_preset: ninja-msvc
-            build_preset: ninja-msvc-release
-            build_dir: out/build/ninja-msvc
+            preset: windows-msvc
+            build_dir: build/windows-msvc
             exe: logcommenter.exe
             jobs: "2"
             install: choco install ccache -y && choco install ninja -y
@@ -88,11 +95,12 @@ jobs:
             ${{ matrix.build_dir }}/_deps/llvm_project-src
             ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
           key: llvm-src-${{ runner.os }}-23.1.3
+      # CMAKE_BUILD_TYPE 由 preset 固定为 Release
       - name: Configure (full, preset)
-        run: cmake --preset ${{ matrix.cfg_preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
+        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
       - name: Build full tool
-        run: cmake --build --preset ${{ matrix.build_preset }} --target logcommenter --parallel ${{ matrix.jobs }}
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
         shell: bash
       - name: Save ccache even on failure
         if: always()
@@ -101,7 +109,7 @@ jobs:
           path: ~/.cache/ccache
           key: ${{ steps.ccache.outputs.cache-primary-key }}
       - name: Build tests
-        run: cmake --build --preset ${{ matrix.build_preset }} --target logcommenter_tests
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter_tests
         shell: bash
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure

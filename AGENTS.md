@@ -5,13 +5,14 @@
 ## 构建与测试
 
 - 完整构建（CPM 现场编译 LLVM/Clang 23，首次较久，之后增量秒级）：
-  `cmake --preset ninja && cmake --build --preset ninja-debug`，产物在 `out/build/ninja/`。
-  本机 CPM 源码缓存在 CPM 的下载缓存目录（如 Windows 桌面 `D:/CodeSpace/cdir/cpm_cache/llvm_project/`；CI 上是 `out/build/<preset>/_deps/llvm_project-*`，由 actions/cache 维护）。
+  Linux/macOS：`cmake --preset unix-default && cmake --build build/unix-default`，产物在 `build/unix-default/`；
+  Windows（MSVC，需 vcvarsall/msvc-dev-cmd 环境）：`cmake --preset windows-msvc && cmake --build build/windows-msvc`。
+  本机 CPM 源码缓存在 CPM 的下载缓存目录（不在仓库内）；CI 上是 `build/<preset>/_deps/llvm_project-*`，由 actions/cache 维护。
 - 纯逻辑单测（改 `src/logengine/` 后必跑，无 Clang 依赖）：
-  `cmake --build out/build/ninja --target logcommenter_tests && ./out/build/ninja/logcommenter_tests`
+  `cmake --build build/unix-default --target logcommenter_tests && ./build/unix-default/logcommenter_tests`
 - E2E 冒烟（与 CI `ast` job 的四场景一一对应，见 `.github/workflows/ci.yml`）：
   对 `src/sample.cpp` 跑 `--comment` / `--inject --var total` / `--inject --position 10:8` /
-  `--inject --var cfg`，compile-commands 用 `out/build/ninja/compile_commands.json`。
+  `--inject --var cfg`，compile-commands 用 `build/unix-default/compile_commands.json`。
 - 只改 `logengine`（纯逻辑）时用 `-DLOGCOMMENTER_BUILD_AST=OFF` 可跳过 LLVM。
 
 ## 产品与技术约束（源自 docs/PRODUCT_TECH_PLAN.md，改动不得违背）
