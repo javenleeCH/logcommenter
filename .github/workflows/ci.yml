@@ -43,128 +43,101 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
 
-  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang。
-  # Linux/macOS 用 ccache（GCC/Clang 支持成熟），Windows/MSVC 用 sccache（对 MSVC 的
-  # 路径/调试信息处理更稳）。缓存目录只存编译器缓存，不缓存 build 产物；key 固定按
-  # runner.os + compiler + LLVM 版本，不绑 commit SHA / CMakeLists hash，跨构建累积命中。
+  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang。实测 ccache 在 Windows/MSVC 上
+  # 命中率可达 99.8%（sccache 0.17 对 MSVC 静态 LLVM 不落盘，已弃用）。缓存目录只存编译
+  # 缓存不存 build 产物；key 固定按 runner.os + LLVM 版本，不绑 commit SHA / CMakeLists hash。
+  # restore/save 显式拆分：组合式 actions/cache 在本场景 post-step 曾报
+  # “Path(s) do not exist, no cache is being saved”，显式 save 更可靠。
   ast:
     name: ast (${{ matrix.os }})
+    # ccache 关键配置（Ubuntu + Windows 一致）：
+    #  - COMPILERCHECK=content：按编译器二进制内容哈希，runner 镜像重装后 mtime 变也不失效
+    #  - BASEDIR + NOHASHDIR：绝对路径/构建目录不进哈希
+    #  - SLOPPINESS：LLVM 用 PCH（pch_defines）+ time macros，否则这些 TU 不可缓存
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: "5G"
+      CCACHE_COMPILERCHECK: content
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_SLOPPINESS: time_macros,pch_defines,include_file_mtime,include_file_ctime
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            compiler: gcc
             preset: unix-default
             build_dir: build/unix-default
             exe: logcommenter
             jobs: "$(nproc)"
-            launcher: ccache
-            cache_dir: ${{ github.workspace }}/.ccache
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
-            compiler: msvc
             preset: windows-msvc
             build_dir: build/windows-msvc
             exe: logcommenter.exe
             jobs: "4"
-            launcher: sccache
-            cache_dir: ${{ github.workspace }}/.sccache
-            install: choco install sccache ninja -y
+            install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      # 配置编译器缓存环境（仅当前平台会生效的那一个）
-      - name: Setup compiler cache env
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
-            echo "SCCACHE_CACHE_SIZE=20G" >> "$GITHUB_ENV"
-          else
-            # ccache 关键配置：内容哈希（镜像重装 mtime 变也不失效）、BASEDIR/NOHASHDIR
-            # 稳定绝对路径、SLOPPINESS 放行 LLVM 的 PCH/time macros。
-            echo "CCACHE_DIR=${{ github.workspace }}/.ccache" >> "$GITHUB_ENV"
-            echo "CCACHE_MAXSIZE=5G" >> "$GITHUB_ENV"
-            echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
-            echo "CCACHE_BASEDIR=${{ github.workspace }}" >> "$GITHUB_ENV"
-            echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
-            echo "CCACHE_SLOPPINESS=time_macros,pch_defines,include_file_mtime,include_file_ctime" >> "$GITHUB_ENV"
-          fi
-
-      - name: Cache compiler cache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
-          path: ${{ matrix.cache_dir }}
-          key: ${{ runner.os }}-${{ matrix.compiler }}-llvm-23.1.3
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-logcommenter-${{ runner.os }}-llvm-23.1.3
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.compiler }}-
-
-      - name: Install compiler cache + ninja
+            ccache-logcommenter-${{ runner.os }}-
+      - name: Install ccache + ninja
         run: ${{ matrix.install }}
-
       - name: Enable MSVC dev environment (Ninja on Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
-
-      # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject
-      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
-      - name: Cache LLVM source (CPM)
-        uses: actions/cache@v4
+      # LLVM 源码同样用 restore/save 拆分。CPM 看到源码已存在则跳过下载/解压。
+      - name: Restore LLVM source cache
+        id: llvm-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ matrix.build_dir }}/_deps/llvm_project-src
             ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
           key: llvm-src-${{ runner.os }}-23.1.3
-
-      # ccache 统计清零（sccache 每 job 新起 daemon，天然只计本次）
-      - name: Zero ccache stats (Linux)
-        if: runner.os != 'Windows'
+      - name: Zero ccache stats
         run: ccache -z
         shell: bash
-
       # CMAKE_BUILD_TYPE 由 preset 固定为 Release；C/C++ launcher 都设上以覆盖 LLVM 的 C 源
-      - name: Configure
-        shell: bash
+      - name: Configure (full, preset)
         run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cmake --preset ${{ matrix.preset }} \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-          else
-            cmake --preset ${{ matrix.preset }} \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache
-          fi
-
+          cmake --preset ${{ matrix.preset }} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
+        shell: bash
       - name: Build full tool
         run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
         shell: bash
-
+      - name: Show ccache stats
+        run: ccache --show-stats --verbose
+        shell: bash
+      - name: Save ccache even on failure
+        if: always() && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-logcommenter-${{ runner.os }}-llvm-23.1.3
+      - name: Save LLVM source cache
+        if: always() && steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ matrix.build_dir }}/_deps/llvm_project-src
+            ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
+          key: llvm-src-${{ runner.os }}-23.1.3
       - name: Build tests
         run: cmake --build ${{ matrix.build_dir }} --target logcommenter_tests
         shell: bash
-
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
         shell: bash
-
-      - name: Show compiler cache stats
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            sccache --show-stats
-          else
-            ccache --show-stats --verbose
-          fi
-
-      # sccache 常驻 daemon 会把缓存缓存在内存，actions/cache 保存前必须 stop 落盘
-      - name: Stop sccache server (flush to disk)
-        if: always() && runner.os == 'Windows'
-        run: sccache --stop-server || true
-        shell: bash
-
       - name: E2E smoke (comment + inject)
         run: |
           set -e
