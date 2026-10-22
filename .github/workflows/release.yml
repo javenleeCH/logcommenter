@@ -38,15 +38,17 @@ jobs:
             exe: logcommenter.exe
             install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
-    env:
-      CCACHE_DIR: ${{ runner.home }}/.cache/ccache
     steps:
       - uses: actions/checkout@v4
+
+      # 用 $HOME 展开 ccache 目录（无字面绝对路径，跨平台一致）
+      - name: Set ccache dir
+        run: echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
 
       - name: Cache ccache
         uses: actions/cache@v4
         with:
-          path: ${{ runner.home }}/.cache/ccache
+          path: ~/.cache/ccache
           # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
           # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
           key: ccache-release-${{ matrix.os }}-llvm-23.1.3
