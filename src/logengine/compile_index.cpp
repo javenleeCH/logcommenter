@@ -19,122 +19,106 @@ namespace logc {
 
 namespace {
 
-// 从 JSON 字节流中定位所有 "file": "..." 条目，返回 (条目'{'偏移, 条目'}'偏移, 文件路径)
+// 从 JSON 字节流中定位所有 compile_commands 条目，返回 (条目'{'偏移, 条目'}'偏移, 文件路径)
 struct FileEntry {
   size_t start;  // 条目 '{'
   size_t end;    // 条目 '}'
   std::string path;
 };
 
-// 向前（start 方向）从 pos 起找最近的 '{'
-size_t findBackwardBrace(const std::string &data, size_t pos) {
-  if (pos == 0) return std::string::npos;
-  // 向后找条目开括号 '{'，但必须跳过引号字符串（command 里可能含 { }）。
-  // 否则一旦某条 command 字符串里有 '{'，会把条目起点选在字符串中间，导致括号失衡、跳过后续条目。
-  bool in_str = false, esc = false;
-  for (size_t i = pos; i-- > 0;) {
-    char c = data[i];
-    if (in_str) {
-      if (esc) {
-        esc = false;
-      } else if (c == '\\') {
-        esc = true;
-      } else if (c == '"') {
-        in_str = false;
-      }
-      continue;
-    }
-    if (c == '"') {
-      in_str = true;
-    } else if (c == '{') {
-      return i;
-    }
+// 从 ':' 后第一个引号开始读取 JSON 字符串字面量，正确处理 \" \\ 等转义。
+// 返回读取结束位置（闭合引号位置），失败返回 npos。
+bool readJsonString(const std::string &data, size_t pos, size_t limit,
+                    std::string *out, size_t *closePos) {
+  size_t j = pos;
+  while (j < limit && (data[j] == ' ' || data[j] == '\t' ||
+                       data[j] == '\r' || data[j] == '\n')) {
+    ++j;
   }
-  return std::string::npos;
+  if (j >= limit || data[j] != '"') return false;
+  ++j;
+  std::string s;
+  bool esc = false;
+  while (j < limit) {
+    char c = data[j];
+    if (esc) {
+      // JSON 转义还原：Windows 路径/命令里的反斜杠、转义引号需要原样保留
+      if (c == 'n') s += '\n';
+      else if (c == 't') s += '\t';
+      else if (c == 'r') s += '\r';
+      else s += c;  // \" \\ \/ 等原样保留后续字符
+      esc = false;
+    } else if (c == '\\') {
+      esc = true;
+    } else if (c == '"') {
+      *out = std::move(s);
+      if (closePos) *closePos = j;
+      return true;
+    } else {
+      s += c;
+    }
+    ++j;
+  }
+  return false;
 }
 
-// 向后从 start 起，跳过字符串，平衡括号到匹配的 '}'
-size_t findForwardBalanced(const std::string &data, size_t start) {
-  int depth = 0;
-  bool in_str = false, esc = false;
-  for (size_t i = start; i < data.size(); ++i) {
-    char c = data[i];
-    if (in_str) {
-      if (esc) {
-        esc = false;
-      } else if (c == '\\') {
-        esc = true;
-      } else if (c == '"') {
-        in_str = false;
-      }
-      continue;
-    }
-    if (c == '"') {
-      in_str = true;
-    } else if (c == '{') {
-      ++depth;
-    } else if (c == '}') {
-      --depth;
-      if (depth == 0) return i;
-    }
-  }
-  return std::string::npos;
-}
-
+// 正向扫描：compile_commands.json 是一个顶层数组 [ {..}, {..} ]，
+// 每个条目是一个无嵌套对象（键均为 directory/command/file/output 等字符串）。
+// 严格按“引号状态 + 转义 + 括号深度”单向扫描，定位每个顶层对象的 [start,end]，
+// 再在区间内提取 \"file\" 值。
+//
+// 必须正向（不能反向找 '{'）：Windows 的 MSVC 命令以转义引号开头，例如
+//   "command": "\"C:\\Program Files\\...\\cl.exe\" ..."
+// 反向扫描无法可靠配对 '\\' 与 '\"'，会把字符串真正的开引号误判为转义引号、
+// 造成括号错位而丢条目。正向转义处理则没有该问题。
 std::vector<FileEntry> scanEntries(const std::string &data) {
   std::vector<FileEntry> out;
   const size_t n = data.size();
-  size_t i = 0;
-  while (i < n) {
-    // 找到 "file" 键
-    size_t hit = data.find("\"file\"", i);
-    if (hit == std::string::npos) break;
-    // 该键后面应有 ':' 和一个字符串值
-    size_t j = hit + 6;
-    while (j < n && (data[j] == ' ' || data[j] == '\t' ||
-                     data[j] == '\r' || data[j] == '\n')) {
-      ++j;
-    }
-    if (j >= n || data[j] != ':') {
-      i = hit + 6;
-      continue;
-    }
-    ++j;
-    while (j < n && (data[j] == ' ' || data[j] == '\t' ||
-                     data[j] == '\r' || data[j] == '\n')) {
-      ++j;
-    }
-    if (j >= n || data[j] != '"') {
-      i = hit + 6;
-      continue;
-    }
-    // 读字符串值
-    ++j;
-    std::string path;
-    bool esc = false;
-    while (j < n) {
-      char c = data[j];
+  bool in_str = false, esc = false;
+  int depth = 0;
+  size_t start = std::string::npos;
+
+  for (size_t i = 0; i < n; ++i) {
+    char c = data[i];
+    if (in_str) {
       if (esc) {
-        path += c;
         esc = false;
       } else if (c == '\\') {
         esc = true;
       } else if (c == '"') {
-        break;
-      } else {
-        path += c;
+        in_str = false;
       }
-      ++j;
+      continue;
     }
-    // 条目边界
-    size_t start = findBackwardBrace(data, hit);
-    size_t end = (start == std::string::npos)
-                     ? std::string::npos
-                     : findForwardBalanced(data, start);
-    if (start != std::string::npos && end != std::string::npos) {
-      out.push_back({start, end, path});
+    if (c == '"') {
+      in_str = true;
+    } else if (c == '{') {
+      if (depth == 0) start = i;
+      ++depth;
+    } else if (c == '}') {
+      if (depth > 0) {
+        --depth;
+        if (depth == 0 && start != std::string::npos) {
+          // 在 [start, i] 区间内提取 \"file\" 字符串
+          size_t hit = data.find("\"file\"", start + 1);
+          if (hit != std::string::npos && hit < i) {
+            size_t k = hit + 6;
+            while (k < i && (data[k] == ' ' || data[k] == '\t' ||
+                             data[k] == '\r' || data[k] == '\n')) {
+              ++k;
+            }
+            std::string path;
+            if (k < i && data[k] == ':') {
+              size_t closePos;
+              if (readJsonString(data, k + 1, i, &path, &closePos)) {
+                out.push_back({start, i, std::move(path)});
+              }
+            }
+          }
+          start = std::string::npos;
+        }
+      }
     }
-    i = (end == std::string::npos) ? hit + 6 : end + 1;
   }
   return out;
 }
