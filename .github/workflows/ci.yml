@@ -121,21 +121,33 @@ jobs:
       - name: Show ccache stats
         run: ccache --show-stats --verbose
         shell: bash
-      # TEMP DIAGNOSTIC（build 之后）：用 Windows 原生绝对路径 vs 相对路径跑 exe，
-      # 验证 readEntry 能否命中 sample.cpp
-      - name: DIAG test file path resolution
+      # TEMP DIAGNOSTIC（build 之后）：解析 compile_commands 看 sample 条目 + 跑 exe
+      - name: DIAG sample entry
         run: |
           BD="${{ matrix.build_dir }}"
-          EXE="$BD/${{ matrix.exe }}"
-          WINABS=$(cygpath -w "$(pwd)/src/sample.cpp")
-          echo "==== win abs = $WINABS ===="
-          set +e
-          echo "==== ABSOLUTE path ===="
-          "$EXE" --comment --file "$WINABS" --compile-commands "$BD/compile_commands.json" 2>/tmp/abs_err.txt 1>/tmp/abs_out.json
-          echo "exit=$?"; echo "stderr:"; cat /tmp/abs_err.txt; echo "stdout head:"; head -c 500 /tmp/abs_out.json; echo
-          echo "==== RELATIVE path ===="
-          "$EXE" --comment --file src/sample.cpp --compile-commands "$BD/compile_commands.json" 2>/tmp/rel_err.txt 1>/dev/null
-          echo "exit=$?"; echo "stderr:"; cat /tmp/rel_err.txt
+          python3 - "$BD/compile_commands.json" <<'PY'
+import json, sys
+p=sys.argv[1]
+data=open(p,'rb').read()
+arr=json.loads(data)
+print('JSON total entries:', len(arr))
+print('raw has "file" count:', data.count(b'"file"'))
+samp=[e for e in arr if e['file'].replace('\\','/').endswith('src/sample.cpp')]
+print('sample entry found by json parse:', len(samp))
+if samp:
+    e=samp[0]
+    print('keys:', list(e.keys()))
+    print('file:', e['file'])
+    # 找原文中 sample 的原始块
+    idx=data.find(b'src/sample.cpp')
+    seg=data[max(0,idx-400):idx+200]
+    print('--- raw around sample (braces inspection) ---')
+    print(seg.decode('utf-8','replace'))
+    print('open braces in segment:', seg.count(b'{'), 'close braces:', seg.count(b'}'))
+PY
+          echo "==== logc-idx 中 sample 条目 ===="
+          grep -c "sample" "$BD/compile_commands.json.logc-idx" 2>/dev/null || echo "(no idx file yet)"
+          grep "sample" "$BD/compile_commands.json.logc-idx" 2>/dev/null | head -n 3 || true
         shell: bash
       # 只在本次未命中 ccache 时保存；命中时已有缓存，跳过避免 key 冲突。always() 保证
       # 即使后续 E2E 失败，本次冷构建也已落盘。
