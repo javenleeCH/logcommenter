@@ -21,6 +21,16 @@ elseif(NOT LOGC_COMPILER STREQUAL "auto")
   message(FATAL_ERROR "Unknown LOGC_COMPILER: ${LOGC_COMPILER} (auto|msvc|clang-cl|clang|gcc)")
 endif()
 
+# 链接器选择（可选）：默认空 = CMake 按编译器自动选择（MSVC→link.exe，GCC/Clang→编译器驱动），
+# 一般不需要手动指定。仅在要强制特定链接器时使用：
+#   cmake -DLOGC_LINKER=lld-link.exe   # Windows（LLVM lld 的 MSVC 兼容前端）
+#   cmake -DLOGC_LINKER=ld.lld         # Unix（直接指定可执行文件）
+# Unix 上更推荐经编译器驱动切换：-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+set(LOGC_LINKER "" CACHE STRING "Force linker (empty=auto): lld-link.exe / ld.lld / <path>")
+if(LOGC_LINKER)
+  set(CMAKE_LINKER "${LOGC_LINKER}" CACHE STRING "Linker" FORCE)
+endif()
+
 project(logcommenter)
 
 set(CMAKE_CXX_STANDARD 17)

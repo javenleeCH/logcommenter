@@ -105,7 +105,8 @@ cmake -S . -B build -DLOGC_COMPILER=clang       # Linux/macOS 的 clang / clang+
 | 选项 | 说明 |
 |---|---|
 | `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 Clang）；OFF=仅纯逻辑 core |
-| `LOGC_COMPILER` | 指定编译器：`auto`(默认)/`msvc`(cl.exe)/`clang-cl`(clang-cl.exe)/`clang`/`gcc`；msvc、clang-cl 需在 MSVC 开发环境中运行 |
+| `LOGC_COMPILER` | 指定编译器：`auto`(默认)/`msvc`(cl.exe)/`clang-cl`(clang-cl.exe)/`clang`/`gcc`；msvc、clang-cl 需在 MSVC 开发环境中运行；**链接器由 CMake 按编译器自动选择，无需手动指定** |
+| `LOGC_LINKER` | 可选，强制指定链接器（默认空=自动）：如 `lld-link.exe` / `ld.lld` / 完整路径；仅换特定链接器时需要 |
 | `LOGC_DISABLE_SSL_CPM` | ON=下载 CPM.cmake 时禁用 TLS 校验（代理/自签证书环境） |
 | `LOGC_DISABLE_SSL_LLVM` | ON=下载 llvm-project 时禁用 TLS 校验 |
 | `CMAKE_CXX_COMPILER_LAUNCHER=ccache` | 启用 ccache 编译缓存 |
