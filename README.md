@@ -98,6 +98,9 @@ cmake -S . -B build -DLOGC_DISABLE_SSL_CPM=ON -DLOGC_DISABLE_SSL_LLVM=ON
 cmake -S . -B build -DLOGC_COMPILER=msvc        # MSVC cl.exe（需在 vcvarsall/msvc-dev-cmd 环境）
 cmake -S . -B build -DLOGC_COMPILER=clang-cl    # LLVM clang-cl.exe（同样需 MSVC 头文件环境）
 cmake -S . -B build -DLOGC_COMPILER=clang       # Linux/macOS 的 clang / clang++
+# 换编译器时链接器自动跟随：msvc/clang-cl → link.exe，clang/gcc → 编译器驱动。
+# 若同一 build 目录换过编译器出现 `cl.exe is not able to compile ... used ld` 类报错
+# （CMakeCache 残留旧链接器），删掉 build 目录重新 configure 即可。
 ```
 
 构建选项：

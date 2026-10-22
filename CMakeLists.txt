@@ -8,15 +8,24 @@ set(LOGC_COMPILER "auto" CACHE STRING "Compiler preset: auto|msvc|clang-cl|clang
 if(LOGC_COMPILER STREQUAL "msvc")
   set(CMAKE_C_COMPILER "cl.exe" CACHE STRING "C compiler" FORCE)
   set(CMAKE_CXX_COMPILER "cl.exe" CACHE STRING "C++ compiler" FORCE)
+  # 链接器跟随：MSVC 用 link.exe。必须显式覆盖——否则换编译器时
+  # CMakeCache 残留的 CMAKE_LINKER=ld 会让 cl.exe 用 GNU ld 链接而失败
+  # （cl / is not able to compile a simple test program ... used ld）
+  set(CMAKE_LINKER "link.exe" CACHE STRING "Linker" FORCE)
 elseif(LOGC_COMPILER STREQUAL "clang-cl")
   set(CMAKE_C_COMPILER "clang-cl.exe" CACHE STRING "C compiler" FORCE)
   set(CMAKE_CXX_COMPILER "clang-cl.exe" CACHE STRING "C++ compiler" FORCE)
+  # clang-cl 是 MSVC 兼容前端，链接器同样是 link.exe
+  set(CMAKE_LINKER "link.exe" CACHE STRING "Linker" FORCE)
 elseif(LOGC_COMPILER STREQUAL "clang")
   set(CMAKE_C_COMPILER "clang" CACHE STRING "C compiler" FORCE)
   set(CMAKE_CXX_COMPILER "clang++" CACHE STRING "C++ compiler" FORCE)
+  # Unix：链接交给编译器驱动（clang++ 调 ld/lld），清掉可能残留的 CMAKE_LINKER
+  unset(CMAKE_LINKER CACHE)
 elseif(LOGC_COMPILER STREQUAL "gcc")
   set(CMAKE_C_COMPILER "gcc" CACHE STRING "C compiler" FORCE)
   set(CMAKE_CXX_COMPILER "g++" CACHE STRING "C++ compiler" FORCE)
+  unset(CMAKE_LINKER CACHE)
 elseif(NOT LOGC_COMPILER STREQUAL "auto")
   message(FATAL_ERROR "Unknown LOGC_COMPILER: ${LOGC_COMPILER} (auto|msvc|clang-cl|clang|gcc)")
 endif()
