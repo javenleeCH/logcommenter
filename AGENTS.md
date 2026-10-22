@@ -6,7 +6,7 @@
 
 - 完整构建（CPM 现场编译 LLVM/Clang 23，首次较久，之后增量秒级）：
   `cmake --preset ninja && cmake --build --preset ninja-debug`，产物在 `out/build/ninja/`。
-  本机 CPM 源码缓存在 `D:/CodeSpace/cdir/cpm_cache/llvm_project/`。
+  本机 CPM 源码缓存在 CPM 的下载缓存目录（如 Windows 桌面 `D:/CodeSpace/cdir/cpm_cache/llvm_project/`；CI 上是 `out/build/<preset>/_deps/llvm_project-*`，由 actions/cache 维护）。
 - 纯逻辑单测（改 `src/logengine/` 后必跑，无 Clang 依赖）：
   `cmake --build out/build/ninja --target logcommenter_tests && ./out/build/ninja/logcommenter_tests`
 - E2E 冒烟（与 CI `ast` job 的四场景一一对应，见 `.github/workflows/ci.yml`）：

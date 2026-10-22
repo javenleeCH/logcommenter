@@ -1,6 +1,6 @@
-# 发布工作流：三平台（Linux / Windows / macOS）现场编译 LLVM 23 静态链接，
-# 构建 logcommenter 可执行文件，并附加到指定 release tag。
-# 三平台均启用 ccache（ccache 4.x 支持 MSVC），冷编一次后后续 release 增量构建。
+# 发布工作流：多平台现场编译 LLVM 23 静态链接，构建 logcommenter 可执行文件，
+# 并附加到指定 release tag。各平台启用 ccache（ccache 4.x 支持 MSVC），冷编一次后
+# 后续 release 增量构建。macOS 暂不打包（现场编译 LLVM 冷编过久），配置保留可随时补。
 # 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
 name: release
 
@@ -23,29 +23,30 @@ jobs:
     name: build (${{ matrix.os }})
     strategy:
       fail-fast: false
-      # 注：macOS 暂不支持（现场编译 LLVM 冷编过久），后续加回即可补一行 include。
       matrix:
         include:
           - os: ubuntu-latest
             artifact: logcommenter-linux-x86_64
-            exe: build/logcommenter
-            cache_path: ~/.cache/ccache
+            preset: ninja
+            build_dir: out/build/ninja
+            exe: logcommenter
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
           - os: windows-latest
             artifact: logcommenter-windows-x86_64
-            exe: build/logcommenter.exe
-            cache_path: C:\Users\runneradmin\AppData\Local\ccache
+            preset: ninja-msvc
+            build_dir: out/build/ninja-msvc
+            exe: logcommenter.exe
             install: choco install ccache -y && choco install ninja -y
     runs-on: ${{ matrix.os }}
     env:
-      CCACHE_DIR: ${{ matrix.cache_path }}
+      CCACHE_DIR: ${{ runner.home }}/.cache/ccache
     steps:
       - uses: actions/checkout@v4
 
       - name: Cache ccache
         uses: actions/cache@v4
         with:
-          path: ${{ matrix.cache_path }}
+          path: ${{ runner.home }}/.cache/ccache
           # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
           # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
           key: ccache-release-${{ matrix.os }}-llvm-23.1.3
@@ -54,16 +55,16 @@ jobs:
             ccache-release-${{ matrix.os }}-
 
       # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject
-      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本，升级时手动改。
+      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
       - name: Cache LLVM source (CPM)
         uses: actions/cache@v4
         with:
           path: |
-            build/_deps/llvm_project-src
-            build/_deps/llvm_project-subbuild
+            ${{ matrix.build_dir }}/_deps/llvm_project-src
+            ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
           key: llvm-src-${{ matrix.os }}-23.1.3
 
-      - name: Install ccache
+      - name: Install ccache + ninja
         run: ${{ matrix.install }}
 
       # Ninja generator 不像 VS generator 会自动定位 MSVC，需显式加载 MSVC 开发环境
@@ -74,46 +75,42 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: Configure
-        # 两平台统一 Ninja + ccache（[N/M] 计数）；Windows 环境由上方 msvc-dev-cmd 补齐。
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          else
-            cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          fi
+        # 统一走 CMake preset（ubuntu=auto 工具链，windows=MSVC cl.exe），Windows 环境
+        # 由上方 msvc-dev-cmd 补齐。
+        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
         shell: bash
 
       - name: Build logcommenter
         # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build build --target logcommenter --parallel 2
+            cmake --build --preset ${{ matrix.preset }}-release --target logcommenter --parallel 2
           else
-            cmake --build build --target logcommenter --parallel $(nproc)
+            cmake --build --preset ${{ matrix.preset }}-release --target logcommenter --parallel $(nproc)
           fi
         shell: bash
 
       - name: Package zip (platform-prefixed)
         run: |
+          BD="${{ matrix.build_dir }}"
           # exe 与 clang 内置头同包分发：clang 的 builtin 头（stddef.h 等）只从
           # <resource-dir>/include 查找，-resource-dir 指向 lib/clang/<ver> 版本目录。
           # 优先复制构建树 clang-resource-headers 生成的完整内置头（含 tablegen 产物），
           # 无则回退源码头。
           mkdir -p package/lib/clang
           copied=""
-          for d in build/_deps/llvm_project-build/lib/clang/*/include; do
+          for d in "$BD"/_deps/llvm_project-build/lib/clang/*/include; do
             if [ -d "$d" ]; then cp -r "$(dirname "$d")" package/lib/clang/; copied=1; break; fi
           done
           if [ -z "$copied" ]; then
             mkdir -p package/lib/clang/23.1.3/include
-            cp -r build/_deps/llvm_project-src/clang/lib/Headers/* package/lib/clang/23.1.3/include/
+            cp -r "$BD"/_deps/llvm_project-src/clang/lib/Headers/* package/lib/clang/23.1.3/include/
           fi
+          cp "$BD/${{ matrix.exe }}" "package/${{ matrix.exe }}"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp build/logcommenter.exe package/logcommenter.exe
             # 在 package 内压缩，路径展平到 zip 根；单引号防 bash 展开 * / \（由 PowerShell 处理）
             powershell -Command 'Set-Location package; Compress-Archive -Path * -DestinationPath ..\${{ matrix.artifact }}.zip -Force'
           else
-            cp build/logcommenter package/logcommenter
             (cd package && zip -r ../${{ matrix.artifact }}.zip .)
           fi
           rm -rf package

@@ -6,106 +6,163 @@ on:
   pull_request:
 
 jobs:
-  # 纯逻辑核心 + 单测：零 Clang 依赖，快、必绿
+  # 纯逻辑核心 + 单测：零 Clang 依赖，三平台快速验证跨平台可编译
   core:
-    runs-on: ubuntu-latest
+    name: core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Install ninja (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install ninja; else sudo apt-get update && sudo apt-get install -y ninja-build; fi
+        shell: bash
+      - name: Install ninja (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y
+      - name: Enable MSVC dev environment (Ninja on Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
       - name: Configure (core only)
-        run: cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=OFF -DCMAKE_BUILD_TYPE=Release
+        run: cmake --preset ninja -DLOGCOMMENTER_BUILD_AST=OFF
       - name: Build core tests
-        run: cmake --build build --target logcommenter_tests -j$(nproc)
+        run: cmake --build --preset ninja-debug --target logcommenter_tests
       - name: Run unit tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir out/build/ninja --output-on-failure
 
-  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang，编译并跑全部单测。
+  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang，ubuntu 用系统工具链、
+  # windows 用 MSVC cl.exe（对应 ninja-msvc preset），编译并跑全部单测 + E2E。
   # 用 ccache 做编译级缓存：即使某次构建失败，已编译的 LLVM 单元也进 ccache，
   # 下次增量复用，避免每次 push 都全量重编 LLVM。
   ast:
-    runs-on: ubuntu-latest
+    name: ast (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CCACHE_DIR: ${{ runner.home }}/.cache/ccache
     steps:
       - uses: actions/checkout@v4
       - name: Cache ccache
         id: ccache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
+          path: ${{ runner.home }}/.cache/ccache
           # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
           # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
           key: ccache-logcommenter-${{ runner.os }}-llvm-23.1.3
           restore-keys: |
             ccache-logcommenter-${{ runner.os }}-
-      - name: Install ccache + ninja
+      - name: Install ccache + ninja (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ccache ninja-build
+      - name: Install ccache + ninja (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ccache -y && choco install ninja -y
+      - name: Enable MSVC dev environment (Ninja on Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
       # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject
-      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本，升级时手动改。
+      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
       - name: Cache LLVM source (CPM)
         uses: actions/cache@v4
         with:
           path: |
-            build/_deps/llvm_project-src
-            build/_deps/llvm_project-subbuild
+            out/build/${{ matrix.os == 'Windows' && 'ninja-msvc' || 'ninja' }}/_deps/llvm_project-src
+            out/build/${{ matrix.os == 'Windows' && 'ninja-msvc' || 'ninja' }}/_deps/llvm_project-subbuild
           key: llvm-src-${{ runner.os }}-23.1.3
-      - name: Configure (full, CPM)
-        run: cmake -S . -B build -G Ninja -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Configure (full, preset)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --preset ninja-msvc -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake --preset ninja -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
+          fi
+        shell: bash
       - name: Build full tool
-        run: cmake --build build --target logcommenter -j$(nproc)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --build --preset ninja-msvc-release --target logcommenter --parallel 2
+          else
+            cmake --build --preset ninja-release --target logcommenter --parallel $(nproc)
+          fi
+        shell: bash
       - name: Save ccache even on failure
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: ~/.cache/ccache
+          path: ${{ runner.home }}/.cache/ccache
           key: ${{ steps.ccache.outputs.cache-primary-key }}
       - name: Build tests
-        run: cmake --build build --target logcommenter_tests -j$(nproc)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --build --preset ninja-msvc-release --target logcommenter_tests
+          else
+            cmake --build --preset ninja-release --target logcommenter_tests
+          fi
+        shell: bash
       - name: Run unit tests
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ctest --test-dir out/build/ninja-msvc --output-on-failure
+          else
+            ctest --test-dir out/build/ninja --output-on-failure
+          fi
+        shell: bash
       - name: E2E smoke (comment + inject)
         run: |
           set -e
+          BD="out/build/ninja"
+          EXE="$BD/logcommenter"
+          if [ "$RUNNER_OS" = "Windows" ]; then BD="out/build/ninja-msvc"; EXE="$BD/logcommenter.exe"; fi
           # clang 的 builtin 头（stddef.h 等）只从 <resource-dir>/include 查找，
           # -resource-dir 必须指向直接包含 include/ 的版本目录。按标准结构复制
           # 构建树 clang-resource-headers 生成的版本目录到 exe 旁（验证随包分发布局）；
           # 无则回退源码头 23.1.3
-          mkdir -p build/lib/clang
+          mkdir -p "$BD/lib/clang"
           copied=""
-          for d in build/_deps/llvm_project-build/lib/clang/*/include; do
-            if [ -d "$d" ]; then cp -r "$(dirname "$d")" build/lib/clang/; copied=1; break; fi
+          for d in "$BD"/_deps/llvm_project-build/lib/clang/*/include; do
+            if [ -d "$d" ]; then cp -r "$(dirname "$d")" "$BD/lib/clang/"; copied=1; break; fi
           done
           if [ -z "$copied" ]; then
-            mkdir -p build/lib/clang/23.1.3/include
-            cp -r build/_deps/llvm_project-src/clang/lib/Headers/* build/lib/clang/23.1.3/include/
+            mkdir -p "$BD/lib/clang/23.1.3/include"
+            cp -r "$BD"/_deps/llvm_project-src/clang/lib/Headers/* "$BD/lib/clang/23.1.3/include/"
           fi
           export LOGCOMMENTER_DEBUG=1
           # --comment：sample.cpp 中含 pengtest 的日志应被注释（输出 TextEdit "// "）
-          ./build/logcommenter --comment --file src/sample.cpp \
-            --compile-commands build/compile_commands.json > /tmp/e2e_comment.json
+          "$EXE" --comment --file src/sample.cpp \
+            --compile-commands "$BD/compile_commands.json" > /tmp/e2e_comment.json
           grep -Fq '"// "' /tmp/e2e_comment.json && echo "E2E comment OK"
           cat /tmp/e2e_comment.json
           # --inject --var：在变量 total 处注入观测日志（输出 TextEdit 含 total=）
-          ./build/logcommenter --inject --file src/sample.cpp --var total \
-            --compile-commands build/compile_commands.json > /tmp/e2e_inject.json
+          "$EXE" --inject --file src/sample.cpp --var total \
+            --compile-commands "$BD/compile_commands.json" > /tmp/e2e_inject.json
           grep -Fq 'total=' /tmp/e2e_inject.json && echo "E2E inject(var) OK"
           cat /tmp/e2e_inject.json
           # --inject --position：total 定义在第 10 行（标识符 col7-11），选 10:8 应按位置命中
-          ./build/logcommenter --inject --file src/sample.cpp --position 10:8 \
-            --compile-commands build/compile_commands.json > /tmp/e2e_pos.json
+          "$EXE" --inject --file src/sample.cpp --position 10:8 \
+            --compile-commands "$BD/compile_commands.json" > /tmp/e2e_pos.json
           grep -Fq 'total=' /tmp/e2e_pos.json && echo "E2E inject(position) OK"
           cat /tmp/e2e_pos.json
           # 对象类型 fallback：Config 对象（不可 <<）应输出 (ptr) 地址观测
-          ./build/logcommenter --inject --file src/sample.cpp --var cfg \
-            --compile-commands build/compile_commands.json > /tmp/e2e_obj.json
+          "$EXE" --inject --file src/sample.cpp --var cfg \
+            --compile-commands "$BD/compile_commands.json" > /tmp/e2e_obj.json
           grep -Fq '(ptr)' /tmp/e2e_obj.json && echo "E2E inject(object ptr) OK"
           cat /tmp/e2e_obj.json
           # --inject --position 落在引用处（return total; 第 14 行，total 标识符
           # col10-14）：应解析到声明并在声明语句后注入（方案 §3.4）
-          ./build/logcommenter --inject --file src/sample.cpp --position 14:12 \
-            --compile-commands build/compile_commands.json > /tmp/e2e_ref.json
+          "$EXE" --inject --file src/sample.cpp --position 14:12 \
+            --compile-commands "$BD/compile_commands.json" > /tmp/e2e_ref.json
           grep -Fq 'total=' /tmp/e2e_ref.json && echo "E2E inject(position on ref) OK"
           cat /tmp/e2e_ref.json
           # 应用校验：把 inject 的 TextEdit 真正应用到副本上，
           # 结果必须仍是合法 C++（可再次解析）且重复注入幂等
-          python3 tools/e2e_apply_check.py build/logcommenter \
-            src/sample.cpp build/compile_commands.json
+          python3 tools/e2e_apply_check.py "$EXE" \
+            src/sample.cpp "$BD/compile_commands.json"
+        shell: bash
