@@ -15,8 +15,8 @@ endif()
 #  - AST 引擎 + CLI 依赖 Clang/LibTooling，用 CPM 现场编译 llvm-project。
 # 编译器与构建类型由 CMakePresets.json 控制（windows-msvc / unix-default），不在此处硬编码。
 option(LOGCOMMENTER_BUILD_AST "Build AST engine + CLI (needs Clang/LibTooling)" ON)
-# 唯一的 SSL 开关：代理/自签证书环境下禁用依赖下载（含 CPM.cmake 引导下载与 llvm-project）的 TLS 校验。
-option(LOGC_DISABLE_SSL "Disable TLS verification when downloading dependencies" OFF)
+# 唯一的 SSL 开关：代理/自签证书环境下禁用所有依赖下载（CPM.cmake 引导 + llvm-project）的 TLS 校验。
+option(LOGC_DISABLE_SSL "Disable TLS verification for all dependency downloads" OFF)
 
 # ---- 1. core library (zero Clang deps) ----
 add_library(logcommenter_core
@@ -41,9 +41,10 @@ add_test(NAME core_tests COMMAND logcommenter_tests)
 
 # ---- 3. AST engine + CLI (Clang/LibTooling via CPM) ----
 if(LOGCOMMENTER_BUILD_AST)
-  # 在 include CPM.cmake 之前设置，让引导下载的 file(DOWNLOAD) 也生效；
-  # 之后 llvm-project 包下载同样读取该变量。
+  # LOGC_DISABLE_SSL 直接作用到全局 CMAKE_TLS_VERIFY（覆盖 CPM.cmake 引导下载等一切
+  # file(DOWNLOAD)）；再置 CPM_DOWNLOAD_TLS_VERIFY=OFF，以覆盖 CPM 内部拉取 llvm-project。
   if(LOGC_DISABLE_SSL)
+    set(CMAKE_TLS_VERIFY FALSE CACHE BOOL "" FORCE)
     set(CPM_DOWNLOAD_TLS_VERIFY OFF)
   endif()
 
