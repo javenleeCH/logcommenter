@@ -43,10 +43,10 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
 
-  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang；ubuntu 用系统工具链（unix-default）、
-  # windows 用 MSVC cl.exe（windows-msvc），编译并跑全部单测 + E2E。
-  # 用 ccache 做编译级缓存：即使某次构建失败，已编译的 LLVM 单元也进 ccache，
-  # 下次增量复用，避免每次 push 都全量重编 LLVM。
+  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang；ubuntu 用系统工具链（unix-default）
+  # + ccache，windows 用 MSVC cl.exe（windows-msvc，ccache 对 MSVC+PCH 无缓存价值故不启用）。
+  # 编译并跑全部单测 + E2E。ccache 只在 Linux 启用：即使某次构建失败，已编译的 LLVM 单元
+  # 也进 ccache，下次增量复用。
   ast:
     name: ast (${{ matrix.os }})
     strategy:
@@ -59,21 +59,27 @@ jobs:
             exe: logcommenter
             jobs: "$(nproc)"
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
+            launcher: -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            use_ccache: "true"
           - os: windows-latest
             preset: windows-msvc
             build_dir: build/windows-msvc
             exe: logcommenter.exe
             jobs: "2"
-            install: choco install ccache -y && choco install ninja -y
+            install: choco install ninja -y
+            launcher: ""
+            use_ccache: "false"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # 用 $HOME 展开 ccache 目录（无字面绝对路径，跨平台一致）
+      # ccache 只在 Linux 启用。用 $HOME 展开 ccache 目录（无字面绝对路径，跨平台一致）
       - name: Set ccache dir
+        if: matrix.use_ccache == 'true'
         run: echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
       # restore 与 save 拆分：restore 不自动保存，save 只在本次未命中缓存时执行，
       # 这样 job 失败时也能把已编译的 LLVM 单元落盘（下次增量复用），且不会与已有缓存冲突。
       - name: Restore ccache
+        if: matrix.use_ccache == 'true'
         id: ccache
         uses: actions/cache/restore@v4
         with:
@@ -99,14 +105,14 @@ jobs:
           key: llvm-src-${{ runner.os }}-23.1.3
       # CMAKE_BUILD_TYPE 由 preset 固定为 Release
       - name: Configure (full, preset)
-        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: cmake --preset ${{ matrix.preset }} ${{ matrix.launcher }}
         shell: bash
       - name: Build full tool
         run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
         shell: bash
-      # 只在本次未命中 ccache 时保存；命中时已有缓存，跳过避免 key 冲突。
+      # 只在 Linux 且本次未命中 ccache 时保存；命中时已有缓存，跳过避免 key 冲突。
       - name: Save ccache even on failure
-        if: always() && steps.ccache.outputs.cache-hit != 'true'
+        if: always() && matrix.use_ccache == 'true' && steps.ccache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/ccache
