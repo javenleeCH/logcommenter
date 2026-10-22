@@ -32,6 +32,19 @@ void cleanup(const std::string &p) {
   std::remove((p + ".logc-idx").c_str());
 }
 
+// 跨平台临时目录：Windows 用 %TEMP%，Unix 用 /tmp。
+// 归一为正斜杠——Windows TEMP 的反斜杠会破坏下面 JSON fixture 的合法性，
+// 而文件系统（ofstream）在 Windows 上同样接受正斜杠。
+std::string tmpDir() {
+  const char *td = std::getenv("TMPDIR");
+  if (!td || !*td) td = std::getenv("TEMP");
+  if (!td || !*td) td = "/tmp";
+  std::string d = td;
+  for (char &c : d)
+    if (c == '\\') c = '/';
+  return d;
+}
+
 }  // namespace
 
 TEST_CASE(index_locate_and_read_entry) {
@@ -86,16 +99,17 @@ TEST_CASE(index_cache_roundtrip) {
 TEST_CASE(index_read_normalized_abs_path) {
   // compile_commands 里的 file 带 "./" 等非规范化写法，readEntry 传规范绝对路径
   // 应通过 realpath 兜底命中（不依赖精确字符串匹配）。
-  std::string tmp = "/tmp/logc_norm_src.cpp";
+  std::string dir = tmpDir();
+  std::string tmp = dir + "/logc_norm_src.cpp";
   {
     std::ofstream f(tmp);
     f << "int main() { return 0; }\n";
   }
-  std::string db = "/tmp/logc_norm_db.json";
+  std::string db = dir + "/logc_norm_db.json";
   {
     std::ofstream f(db);
     f << "[\n"
-      << "  {\"directory\":\"/tmp\",\"file\":\"/tmp/./logc_norm_src.cpp\","
+      << "  {\"directory\":\"" << dir << "\",\"file\":\"" << dir << "/./logc_norm_src.cpp\","
       << "\"command\":\"g++ -c logc_norm_src.cpp\"}\n"
       << "]\n";
   }
@@ -104,7 +118,7 @@ TEST_CASE(index_read_normalized_abs_path) {
   EXPECT_TRUE(idx.build(db, &err));
   // 规范绝对路径与索引键（带 ./）字符串不同，但 realpath 归一后相同
   std::string entry;
-  EXPECT_TRUE(idx.readEntry("/tmp/logc_norm_src.cpp", &entry));
+  EXPECT_TRUE(idx.readEntry(tmp, &entry));
   EXPECT_CONTAINS(entry, "logc_norm_src.cpp");
   std::remove(tmp.c_str());
   std::remove(db.c_str());
@@ -113,7 +127,7 @@ TEST_CASE(index_read_normalized_abs_path) {
 TEST_CASE(index_read_slash_normalize_windows_path) {
   // Windows 场景：compile_commands 存反斜杠绝对路径，用户传正斜杠绝对路径。
   // 应通过斜杠归一直接字符串匹配命中（不依赖 realpath，路径在 Linux 上不存在也没关系）。
-  std::string db = "/tmp/logc_win_db.json";
+  std::string db = tmpDir() + "/logc_win_db.json";
   {
     std::ofstream f(db);
     f << "[\n"
