@@ -90,6 +90,9 @@ cmake -S . -B build -DLOGCOMMENTER_BUILD_AST=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target logcommenter -j$(nproc)
 ./build/logcommenter --inject --file src/sample.cpp --var total \
   --compile-commands build/compile_commands.json
+
+# 代理 / 自签证书环境下拉不动 GitHub 时，可单独关掉对应下载的 TLS 校验：
+cmake -S . -B build -DLOGC_DISABLE_SSL_CPM=ON -DLOGC_DISABLE_SSL_LLVM=ON
 ```
 
 构建选项：
@@ -97,7 +100,8 @@ cmake --build build --target logcommenter -j$(nproc)
 | 选项 | 说明 |
 |---|---|
 | `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 Clang）；OFF=仅纯逻辑 core |
-| `LOGCOMMENTER_SYSTEM_LLVM` | ON=用系统 LLVM/Clang；OFF=CPM 现场编译（默认） |
+| `LOGC_DISABLE_SSL_CPM` | ON=下载 CPM.cmake 时禁用 TLS 校验（代理/自签证书环境） |
+| `LOGC_DISABLE_SSL_LLVM` | ON=下载 llvm-project 时禁用 TLS 校验 |
 | `CMAKE_CXX_COMPILER_LAUNCHER=ccache` | 启用 ccache 编译缓存 |
 
 > 首次构建会完整编译 LLVM+Clang，耗时较长（CI 用 ccache + LLVM 源码缓存加速后续）。

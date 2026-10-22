@@ -15,6 +15,11 @@ endif()
 #    CMake 保持简单，不依赖系统 LLVM。
 option(LOGCOMMENTER_BUILD_AST "Build AST engine + CLI (needs Clang/LibTooling)" ON)
 
+# 网络/TLS 选项：代理或自签证书环境下，下载 GitHub 资源可禁用 TLS 校验。
+#   用法: cmake -DLOGC_DISABLE_SSL_CPM=ON -DLOGC_DISABLE_SSL_LLVM=ON ...
+option(LOGC_DISABLE_SSL_CPM "Disable TLS verification when downloading CPM.cmake" OFF)
+option(LOGC_DISABLE_SSL_LLVM "Disable TLS verification when downloading llvm-project (CPM)" OFF)
+
 # ---- 1. core library (zero Clang deps) ----
 add_library(logcommenter_core
   src/logengine/format_table.cpp
@@ -40,13 +45,43 @@ add_test(NAME core_tests COMMAND logcommenter_tests)
 if(LOGCOMMENTER_BUILD_AST)
 
   # ---- AST 引擎统一走 CPM 现场编译 llvm-project（保持 CMake 简单）----
+  # CPM.cmake 兜底下载：仓库内缺失时自动拉取 get_cpm.cmake
+  # （LOGC_DISABLE_SSL_CPM=ON 可禁用 TLS 校验）
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
+    message(STATUS "Downloading CPM.cmake ...")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+    if(LOGC_DISABLE_SSL_CPM)
+      file(DOWNLOAD
+        "https://github.com/cpm-cmake/CPM.cmake/releases/latest/download/get_cpm.cmake"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake"
+        TLS_VERIFY OFF
+        STATUS _cpm_dl_status)
+    else()
+      file(DOWNLOAD
+        "https://github.com/cpm-cmake/CPM.cmake/releases/latest/download/get_cpm.cmake"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake"
+        STATUS _cpm_dl_status)
+    endif()
+    if(NOT _cpm_dl_status EQUAL 0)
+      message(FATAL_ERROR "Failed to download CPM.cmake: ${_cpm_dl_status}")
+    endif()
+  endif()
   include(cmake/CPM.cmake)
+    # LLVM 下载 TLS 控制：CPM 内部用 file(DOWNLOAD)，遵循 CPM_DOWNLOAD_TLS_VERIFY。
+    # LOGC_DISABLE_SSL_LLVM=ON 时先关闭、下载后恢复，不影响其他下载。
+    set(_logc_prev_cpm_tls "${CPM_DOWNLOAD_TLS_VERIFY}")
+    if(LOGC_DISABLE_SSL_LLVM)
+      set(CPM_DOWNLOAD_TLS_VERIFY OFF)
+    endif()
     CPMAddPackage(
       NAME LLVM_PROJECT
       URL https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-23.1.3.zip
       URL_HASH SHA256=2198f03ae4eb6bc6b71cd2a79c60ea9f9ce6bc6bc3a8dcf9e29861f425236746
       DOWNLOAD_ONLY YES
     )
+    if(LOGC_DISABLE_SSL_LLVM)
+      set(CPM_DOWNLOAD_TLS_VERIFY "${_logc_prev_cpm_tls}")
+    endif()
     set(LLVM_ENABLE_PROJECTS "clang" CACHE STRING "启用 Clang")
     set(LLVM_TARGETS_TO_BUILD "X86" CACHE STRING "目标架构（可选）")
     set(LLVM_INCLUDE_TESTS OFF CACHE BOOL "不构建测试")
