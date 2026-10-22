@@ -28,7 +28,11 @@ jobs:
       - name: Install ninja (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then brew install ninja; else sudo apt-get update && sudo apt-get install -y ninja-build; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ninja
+          else
+            sudo apt-get update && sudo apt-get install -y ninja-build
+          fi
         shell: bash
       - name: Install ninja (Windows)
         if: runner.os == 'Windows'
@@ -43,107 +47,99 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
 
-  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang；ubuntu 用系统工具链（unix-default），
-  # windows 用 MSVC cl.exe（windows-msvc）。编译并跑全部单测 + E2E。ccache 跨平台启用：
-  # 缓存目录放在工作区内（launcher 与 cache action 同一原生路径），即便某次构建失败也落盘，
-  # 下次增量复用，避免每次 push 都全量重编 LLVM。
+  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang。
+  # 编译缓存按平台选型：Linux/macOS 用 ccache，Windows + MSVC 用 sccache（对 MSVC 原生支持更稳）。
   ast:
     name: ast (${{ matrix.os }})
-    # ccache 关键配置（Ubuntu + Windows 一致）：
-    #  - 缓存目录在工作区内，避免 ~/$HOME 在 Windows 上展开不一致
-    #  - COMPILERCHECK=content：按编译器二进制内容哈希，runner 镜像重装后 mtime 变也不失效
-    #  - BASEDIR + NOHASHDIR：绝对路径/构建目录不进哈希
-    #  - SLOPPINESS：LLVM 用 PCH（pch_defines）+ time macros，否则这些 TU 不可缓存
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: "5G"
-      CCACHE_COMPILERCHECK: content
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_SLOPPINESS: time_macros,pch_defines,include_file_mtime,include_file_ctime
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
+            compiler: gcc
             preset: unix-default
             build_dir: build/unix-default
             exe: logcommenter
             jobs: "$(nproc)"
             install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
+            cache_dir: ${{ github.workspace }}/.ccache
+            cache_type: ccache
           - os: windows-latest
+            compiler: msvc
             preset: windows-msvc
             build_dir: build/windows-msvc
             exe: logcommenter.exe
             jobs: "4"
-            install: choco install ccache -y && choco install ninja -y
+            install: choco install sccache ninja -y
+            cache_dir: ${{ github.workspace }}/.sccache
+            cache_type: sccache
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # restore 与 save 拆分：restore 不自动保存，save 只在本次未命中缓存时执行，
-      # 这样 job 失败时也能把已编译的 LLVM 单元落盘（下次增量复用），且不会与已有缓存冲突。
-      - name: Restore ccache
-        id: ccache
-        uses: actions/cache/restore@v4
+      - name: Setup compiler cache
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
+            echo "SCCACHE_CACHE_SIZE=20G" >> "$GITHUB_ENV"
+          else
+            echo "CCACHE_DIR=${{ github.workspace }}/.ccache" >> "$GITHUB_ENV"
+            echo "CCACHE_MAXSIZE=20G" >> "$GITHUB_ENV"
+            echo "CCACHE_BASEDIR=${{ github.workspace }}" >> "$GITHUB_ENV"
+            echo "CCACHE_NOHASHDIR=1" >> "$GITHUB_ENV"
+            echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+            echo "CCACHE_SLOPPINESS=time_macros,pch_defines,include_file_mtime,include_file_ctime" >> "$GITHUB_ENV"
+          fi
+      - name: Cache compiler cache
+        uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/.ccache
-          # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
-          # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
-          key: ccache-logcommenter-${{ runner.os }}-llvm-23.1.3
+          path: ${{ matrix.cache_dir }}
+          key: ${{ runner.os }}-${{ matrix.compiler }}-llvm-23.1.3
           restore-keys: |
-            ccache-logcommenter-${{ runner.os }}-
-      - name: Install ccache + ninja
+            ${{ runner.os }}-${{ matrix.compiler }}-
+      - name: Install deps
         run: ${{ matrix.install }}
       - name: Enable MSVC dev environment (Ninja on Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
-      # LLVM 源码缓存同样用 restore/save 拆分（避免 combined actions/cache 与 restore/save
-      # 混用导致 post-step 不保存）。CPM 看到源码已存在则跳过下载/解压。
-      - name: Restore LLVM source cache
-        id: llvm-cache
-        uses: actions/cache/restore@v4
+      # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject stamp）：
+      # 只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
+      - name: Cache LLVM source (CPM)
+        uses: actions/cache@v4
         with:
           path: |
             ${{ matrix.build_dir }}/_deps/llvm_project-src
             ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
           key: llvm-src-${{ runner.os }}-23.1.3
-      # 清零统计，使后面的 stats 只描述本次构建
-      - name: Zero ccache stats
-        run: ccache -z
+      - name: Configure
         shell: bash
-      # CMAKE_BUILD_TYPE 由 preset 固定为 Release
-      - name: Configure (full, preset)
-        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake --preset ${{ matrix.preset }} \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          else
+            cmake --preset ${{ matrix.preset }} \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          fi
       - name: Build full tool
         run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
         shell: bash
-      - name: Show ccache stats
-        run: ccache --show-stats --verbose
-        shell: bash
-      # 只在本次未命中 ccache 时保存；命中时已有缓存，跳过避免 key 冲突。always() 保证
-      # 即使后续 E2E 失败，本次冷构建也已落盘。
-      - name: Save ccache even on failure
-        if: always() && steps.ccache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/.ccache
-          key: ccache-logcommenter-${{ runner.os }}-llvm-23.1.3
-      # LLVM source 保存：restore 未命中时落盘（即使构建失败）
-      - name: Save LLVM source cache
-        if: always() && steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ${{ matrix.build_dir }}/_deps/llvm_project-src
-            ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
-          key: llvm-src-${{ runner.os }}-23.1.3
       - name: Build tests
         run: cmake --build ${{ matrix.build_dir }} --target logcommenter_tests
         shell: bash
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
         shell: bash
+      - name: Show compiler cache stats
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            sccache --show-stats
+          else
+            ccache -s
+          fi
       - name: E2E smoke (comment + inject)
         run: |
           set -e
@@ -156,7 +152,11 @@ jobs:
           mkdir -p "$BD/lib/clang"
           copied=""
           for d in "$BD"/_deps/llvm_project-build/lib/clang/*/include; do
-            if [ -d "$d" ]; then cp -r "$(dirname "$d")" "$BD/lib/clang/"; copied=1; break; fi
+            if [ -d "$d" ]; then
+              cp -r "$(dirname "$d")" "$BD/lib/clang/"
+              copied=1
+              break
+            fi
           done
           if [ -z "$copied" ]; then
             mkdir -p "$BD/lib/clang/23.1.3/include"
