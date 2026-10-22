@@ -114,6 +114,16 @@ jobs:
       - name: Configure (full, preset)
         run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
+      # TEMP DIAGNOSTIC: 检查 compile_commands.json 里 sample.cpp 的真实路径
+      - name: DIAG sample entry in compile_commands
+        run: |
+          BD="${{ matrix.build_dir }}"
+          echo "==== pwd ===="; pwd
+          echo "==== file exists? ===="; ls -l src/sample.cpp
+          echo "==== compile_commands size / entries ===="; ls -l "$BD/compile_commands.json"; grep -c '"file"' "$BD/compile_commands.json"
+          echo "==== any sample.cpp path ===="; grep -o '"file": "[^"]*sample[^"]*"' "$BD/compile_commands.json" | head -n 20
+          echo "==== last 3 file entries (top-level targets) ===="; grep -o '"file": "[^"]*"' "$BD/compile_commands.json" | tail -n 8
+        shell: bash
       - name: Build full tool
         run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
         shell: bash
