@@ -1,4 +1,26 @@
 cmake_minimum_required(VERSION 3.14)
+
+# ---- 编译器选择（须在 project() 之前设置才生效）----
+#   用法: cmake -DLOGC_COMPILER=auto|msvc|clang-cl|clang|gcc ...
+#   msvc / clang-cl 需在 MSVC 开发环境（vcvarsall / msvc-dev-cmd）中运行；
+#   auto 为默认：用环境 CC/CXX 或系统默认，也可直接 -DCMAKE_CXX_COMPILER=...
+set(LOGC_COMPILER "auto" CACHE STRING "Compiler preset: auto|msvc|clang-cl|clang|gcc")
+if(LOGC_COMPILER STREQUAL "msvc")
+  set(CMAKE_C_COMPILER "cl.exe" CACHE STRING "C compiler" FORCE)
+  set(CMAKE_CXX_COMPILER "cl.exe" CACHE STRING "C++ compiler" FORCE)
+elseif(LOGC_COMPILER STREQUAL "clang-cl")
+  set(CMAKE_C_COMPILER "clang-cl.exe" CACHE STRING "C compiler" FORCE)
+  set(CMAKE_CXX_COMPILER "clang-cl.exe" CACHE STRING "C++ compiler" FORCE)
+elseif(LOGC_COMPILER STREQUAL "clang")
+  set(CMAKE_C_COMPILER "clang" CACHE STRING "C compiler" FORCE)
+  set(CMAKE_CXX_COMPILER "clang++" CACHE STRING "C++ compiler" FORCE)
+elseif(LOGC_COMPILER STREQUAL "gcc")
+  set(CMAKE_C_COMPILER "gcc" CACHE STRING "C compiler" FORCE)
+  set(CMAKE_CXX_COMPILER "g++" CACHE STRING "C++ compiler" FORCE)
+elseif(NOT LOGC_COMPILER STREQUAL "auto")
+  message(FATAL_ERROR "Unknown LOGC_COMPILER: ${LOGC_COMPILER} (auto|msvc|clang-cl|clang|gcc)")
+endif()
+
 project(logcommenter)
 
 set(CMAKE_CXX_STANDARD 17)
