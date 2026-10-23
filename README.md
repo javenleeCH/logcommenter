@@ -95,9 +95,12 @@ cmake --preset unix-default \
   -DClang_DIR="$PWD/.toolchain/lib/cmake/clang"
 cmake --build build/unix-default --target logcommenter -j$(nproc)
 
-# 手动下载 Debug 版 LLVM（到 .toolchain-debug，含 -g 符号）
+# 手动下载 Debug 版 LLVM（到 .toolchain-debug，含 -g 符号 + LLVM 源码树）
 bash tools/fetch_llvm.sh "" "" debug
 # 或 LOGC_LLVM_BUILD_TYPE=debug bash tools/fetch_llvm.sh
+# debug asset 内含 LLVM 源码树（.toolchain-debug/llvm-src），供调试器源码映射：
+#   gdb :  set substitute-path <编译机源码根> /path/to/.toolchain-debug/llvm-src
+#   lldb: settings set target.source-map <编译机源码根> /path/to/.toolchain-debug/llvm-src
 
 # 本机已安装 LLVM 时，直接 export LLVM_DIR/Clang_DIR 即可，无需下载
 # 纯逻辑 core（无 Clang 依赖，快，必绿）：跳过 LLVM，只构建单测
@@ -116,7 +119,7 @@ LOGC_DISABLE_SSL=1 bash tools/fetch_llvm.sh
 | `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 LLVM/Clang）；OFF=仅纯逻辑 core |
 | `LLVM_DIR` / `Clang_DIR` | 指向预编译/本机 LLVM 的 CMake config（`lib/cmake/llvm`、`lib/cmake/clang`） |
 | `LOGC_DISABLE_SSL`（环境变量） | =1 时 fetch 脚本下载 asset 跳过 TLS 校验（代理/自签证书环境） |
-| `LOGC_LLVM_BUILD_TYPE`（环境变量） | `debug` 时 fetch 脚本下载 Debug 版 LLVM 到 `.toolchain-debug`（带 -g 符号） |
+| `LOGC_LLVM_BUILD_TYPE`（环境变量） | `debug` 时 fetch 脚本下载 Debug 版 LLVM 到 `.toolchain-debug`（带 -g 符号 + 源码树） |
 
 > 预编译工具链由 `toolchain.yml` 手动构建（`build_type` 选 `release`/`debug`，各构建一次），
 > 上传到 `toolchain-llvm-<ver>` release asset，CI / release 只消费 **release** 版（门禁稳定）；

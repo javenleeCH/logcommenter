@@ -3,9 +3,9 @@
 # 用法: tools/fetch_llvm.sh [version] [dest_dir] [build_type]
 #   version    LLVM 版本，默认 23.1.3
 #   dest_dir   解压目录，默认 .toolchain（debug 时 .toolchain-debug）
-#   build_type release|debug，默认 release（debug 下 asset 带 -debug 后缀，含 -g 符号）
+#   build_type release|debug，默认 release（debug 下 asset 带 -debug 后缀，含 -g 符号 + LLVM 源码树）
 # 环境变量: LOGC_LLVM_VERSION / LOGC_LLVM_DEST / LOGC_LLVM_BUILD_TYPE / LOGC_DISABLE_SSL / GH_TOKEN
-# 产出: <dest>/lib/cmake/{llvm,clang} 等，供 find_package 复用。
+# 产出: <dest>/lib/cmake/{llvm,clang} 等，供 find_package 复用；debug 另有 <dest>/llvm-src 源码树。
 set -euo pipefail
 
 VER="${1:-${LOGC_LLVM_VERSION:-23.1.3}}"
@@ -80,3 +80,6 @@ rm -rf "$TMP"
 echo "[fetch_llvm] installed to $DEST"
 echo "LLVM_DIR=$DEST/lib/cmake/llvm"
 echo "Clang_DIR=$DEST/lib/cmake/clang"
+if [ "$BUILD" = "debug" ]; then
+  echo "[fetch_llvm] LLVM source tree at: $DEST/llvm-src (for debugger source mapping)"
+fi

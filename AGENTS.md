@@ -14,8 +14,8 @@
   release asset（release 无后缀，debug 带 `-debug` 后缀），CI/release 经 `tools/fetch_llvm.sh`
   只下载 **release** 版复用。
 - Debug 版 LLVM 仅用于本地步进调试 LLVM 内部：`./build.sh debug` 会下载 `.toolchain-debug`
-  并以 `unix-default-debug` preset（`-DCMAKE_BUILD_TYPE=Debug`）编译，可单步进 clang::tooling
-  等库函数。门禁（CI/release）始终是 release 版 + Release 构建，不受影响。
+  并以 `unix-default-debug` preset（Debug）编译，可单步进 clang::tooling 等库函数。门禁（CI/release）
+  始终是 release 版 + Release 构建，不受影响。
 - 纯逻辑单测（改 `src/logengine/` 后必跑，无 Clang 依赖）：
   `cmake --build build/unix-default --target logcommenter_tests && ./build/unix-default/logcommenter_tests`
 - E2E 冒烟（与 CI `ast` job 的四场景一一对应，见 `.github/workflows/ci.yml`）：
@@ -57,7 +57,7 @@
   ccache / LLVM 源码缓存**（项目自身源码很小，编译很快）。
 - `fetch_llvm.sh` 按平台+构建类型选 asset（`llvm-clang-<plat>-x86_64-<ver>[-debug].zip`），
   已存在则跳过；代理/自签证书环境用 `LOGC_DISABLE_SSL=1`（curl -k）。
-- Debug 版 asset 体积较大（带 -g 符号，可能 >1GB/平台），只在本地需要步进调试时下载；
+- Debug 版 asset 体积较大（带 -g 符号 + 源码树，可能 >1GB/平台），只在本地需要步进调试时下载；
   CI/release 一律用 release 版，勿引入 debug 到门禁。
 - ci.yml E2E 冒烟的行号（如 `--position 10:8`）与 `src/sample.cpp` 强耦合：
   改 sample.cpp 布局必须同步改 ci.yml 里的行号与注释。
@@ -67,9 +67,14 @@
 
 - `LOGCOMMENTER_DEBUG=1`：打印 resource-dir 解析结果与内置头命中，并让 clang 打印 include
   搜索路径（`-v`）。
-- 想单步进入 LLVM/Clang 库内部：`./build.sh debug`（或手动下载 `.toolchain-debug` 并用
-  `unix-default-debug` / `windows-msvc-debug` preset 以 Debug 编译）。普通断点只在自己代码里时，
-  release 版即可。
+- 想单步进入 LLVM/Clang 库内部：`./build.sh debug`（或手动下载 `.toolchain-debug` 并以
+  `unix-default-debug` / `windows-msvc-debug` preset 以 Debug 编译）。普通断点只在自己代码里时，release 版即可。
+- debug asset 内附带完整 LLVM 源码树 `.toolchain-debug/llvm-src`（调试符号记录的是编译机
+  绝对路径）。要定位到源码行，做源码映射：
+  - gdb：`set substitute-path <编译机源码根> <本地 llvm-src 路径>`
+  - lldb：`settings set target.source-map <编译机源码根> <本地 llvm-src 路径>`
+  编译机源码根即 llvm-project 解压根：Linux 为 `/home/runner/work/<repo>/<repo>/llvm-project`，
+  Windows 为 `D:\a\<repo>\<repo>\llvm-project`；本地路径为 `.toolchain-debug/llvm-src`。
 - compile_commands 索引缓存 `<db>.logc-idx` 按 mtime 失效；改了 compile_commands 后行为异常先删它。
 - `--inject --position` 模式同时挂 `varDecl` 与 `declRefExpr` 两个 matcher：命中哪个就按
   哪个自身的源码范围过滤位置，再按 canonical decl 去重。顺序不可反——先去重会让
