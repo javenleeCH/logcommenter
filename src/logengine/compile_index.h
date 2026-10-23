@@ -10,7 +10,16 @@ namespace logc {
 
 class CompileIndex {
  public:
-  // 流式扫描 jsonPath，建立 file -> (offset,length) 索引。offset 指向条目 '{'，
+  // 单条目索引：file 的字节区间 + directory 字段内容区间（未反转义，按需读取）。
+  // dirLen == 0 表示该条目没有提取到 directory，相对路径兜底将退化。
+  struct Entry {
+    size_t offset = 0;
+    size_t length = 0;
+    size_t dirOff = 0;
+    size_t dirLen = 0;
+  };
+
+  // 流式扫描 jsonPath，建立 file -> Entry 索引。offset 指向条目 '{'，
   // length 覆盖该条目 JSON（含闭合 '}'）。失败返回 false 并写 err。
   bool build(const std::string &jsonPath, std::string *err = nullptr);
 
@@ -19,7 +28,7 @@ class CompileIndex {
               size_t *length) const;
 
   // 读取该文件的原始条目 JSON 文本（seek+read，不加载全量文件）。
-  // file 可为相对路径：未精确命中时按绝对路径解析兜底匹配。
+  // file 可为相对路径：未精确命中时按"绝对路径 + 条目 directory 拼接"兜底匹配。
   bool readEntry(const std::string &file, std::string *entryJson) const;
 
   // 持久化索引到 cachePath（JSON lines），供下次直接加载，避免重扫 1GB
@@ -41,7 +50,7 @@ class CompileIndex {
   // 按已知 (offset,length) seek+read 单条条目
   bool readAt(size_t offset, size_t length, std::string *entryJson) const;
   std::string jsonPath_;
-  std::map<std::string, std::pair<size_t, size_t>> idx_;
+  std::map<std::string, Entry> idx_;
   std::time_t mtime_ = 0;
 };
 

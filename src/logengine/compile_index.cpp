@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <vector>
 
@@ -19,11 +20,14 @@ namespace logc {
 
 namespace {
 
-// 从 JSON 字节流中定位所有 compile_commands 条目，返回 (条目'{'偏移, 条目'}'偏移, 文件路径)
+// 从 JSON 字节流中定位所有 compile_commands 条目，返回条目区间、file 路径，
+// 以及 "directory" 值内容在原文中的区间（未反转义，按需读取）。
 struct FileEntry {
   size_t start;  // 条目 '{'
   size_t end;    // 条目 '}'
   std::string path;
+  size_t dirOff = 0;
+  size_t dirLen = 0;
 };
 
 // 从 ':' 后第一个引号开始读取 JSON 字符串字面量，正确处理 \" \\ 等转义。
@@ -111,7 +115,48 @@ std::vector<FileEntry> scanEntries(const std::string &data) {
             if (k < i && data[k] == ':') {
               size_t closePos;
               if (readJsonString(data, k + 1, i, &path, &closePos)) {
-                out.push_back({start, i, std::move(path)});
+                FileEntry fe;
+                fe.start = start;
+                fe.end = i;
+                fe.path = std::move(path);
+                // 提取 "directory" 值内容区间（原文、未反转义；dirLen=0 表示缺失）。
+                // 键在条目内只出现一次，与 file 的相对顺序无关。
+                size_t dhit = data.find("\"directory\"", start + 1);
+                if (dhit != std::string::npos && dhit < i) {
+                  size_t dk = dhit + 11;  // 键 "directory" 长度（含引号）
+                  while (dk < i && (data[dk] == ' ' || data[dk] == '\t' ||
+                                    data[dk] == '\r' || data[dk] == '\n')) {
+                    ++dk;
+                  }
+                  if (dk < i && data[dk] == ':') {
+                    size_t dj = dk + 1;
+                    while (dj < i && (data[dj] == ' ' || data[dj] == '\t' ||
+                                      data[dj] == '\r' || data[dj] == '\n')) {
+                      ++dj;
+                    }
+                    if (dj < i && data[dj] == '"') {
+                      size_t cs = dj + 1;  // 内容起始（开引号之后）
+                      size_t e = cs;
+                      bool esc = false;
+                      while (e < i) {
+                        char c = data[e];
+                        if (esc) {
+                          esc = false;
+                        } else if (c == '\\') {
+                          esc = true;
+                        } else if (c == '"') {
+                          break;
+                        }
+                        ++e;
+                      }
+                      if (e < i && e > cs) {
+                        fe.dirOff = cs;
+                        fe.dirLen = e - cs;
+                      }
+                    }
+                  }
+                }
+                out.push_back(std::move(fe));
               }
             }
           }
@@ -166,6 +211,45 @@ std::string absolutePath(const std::string &p) {
   return normalizeSlashes(out);
 }
 
+// 判断路径是否绝对：Unix 以 '/' 开头；Windows 还认盘符 'X:'。
+bool isAbsolutePath(const std::string &p) {
+  if (!p.empty() && (p[0] == '/' || p[0] == '\\')) return true;
+#ifdef _WIN32
+  if (p.size() >= 2 &&
+      std::isalpha(static_cast<unsigned char>(p[0])) && p[1] == ':')
+    return true;
+#endif
+  return false;
+}
+
+// 拼接 directory 与相对 file（补一个分隔符）。
+std::string joinPath(const std::string &dir, const std::string &rel) {
+  std::string out = dir;
+  if (!out.empty() && out.back() != '/' && out.back() != '\\') out += '/';
+  out += rel;
+  return out;
+}
+
+// JSON 字符串转义还原（用于按需读取的 directory 原文）。
+std::string unescapeJson(const std::string &s) {
+  std::string out;
+  bool esc = false;
+  for (char c : s) {
+    if (esc) {
+      if (c == 'n') out += '\n';
+      else if (c == 't') out += '\t';
+      else if (c == 'r') out += '\r';
+      else out += c;  // \" \\ \/ 等
+      esc = false;
+    } else if (c == '\\') {
+      esc = true;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 bool CompileIndex::build(const std::string &jsonPath, std::string *err) {
@@ -179,7 +263,7 @@ bool CompileIndex::build(const std::string &jsonPath, std::string *err) {
   idx_.clear();
   auto entries = scanEntries(data);
   for (auto &e : entries) {
-    idx_[e.path] = {e.start, e.end - e.start + 1};
+    idx_[e.path] = {e.start, e.end - e.start + 1, e.dirOff, e.dirLen};
   }
   jsonPath_ = jsonPath;
   return true;
@@ -189,8 +273,8 @@ bool CompileIndex::locate(const std::string &file, size_t *offset,
                           size_t *length) const {
   auto it = idx_.find(file);
   if (it == idx_.end()) return false;
-  if (offset) *offset = it->second.first;
-  if (length) *length = it->second.second;
+  if (offset) *offset = it->second.offset;
+  if (length) *length = it->second.length;
   return true;
 }
 
@@ -206,12 +290,12 @@ bool CompileIndex::readEntry(const std::string &file,
   if (nfile != file) {
     auto it = idx_.find(nfile);
     if (it != idx_.end()) {
-      return readAt(it->second.first, it->second.second, entryJson);
+      return readAt(it->second.offset, it->second.length, entryJson);
     }
   }
   for (auto &kv : idx_) {
     if (normalizeSlashes(kv.first) == nfile) {
-      return readAt(kv.second.first, kv.second.second, entryJson);
+      return readAt(kv.second.offset, kv.second.length, entryJson);
     }
   }
   // 兜底：compile_commands 里通常是绝对路径，用户可能传相对路径。
@@ -222,9 +306,22 @@ bool CompileIndex::readEntry(const std::string &file,
   }
   if (!abs.empty()) {
     for (auto &kv : idx_) {
-      std::string kabs = absolutePath(kv.first);
+      std::string kabs;
+      if (isAbsolutePath(kv.first)) {
+        kabs = absolutePath(kv.first);
+      } else if (kv.second.dirLen > 0) {
+        // 条目 file 是相对路径：基准是该条目的 directory（真实 monorepo 常见，
+        // 如鸿蒙 "file":"../../../foundation/..." + "directory":"/srv/workspace/..."），
+        // 不是当前工作目录。按需读 directory 原文后反转义，再拼接绝对化比较。
+        std::string dirRaw;
+        if (readAt(kv.second.dirOff, kv.second.dirLen, &dirRaw)) {
+          std::string dir = unescapeJson(dirRaw);
+          if (!dir.empty() && isAbsolutePath(dir))
+            kabs = absolutePath(joinPath(dir, kv.first));
+        }
+      }
       if (!kabs.empty() && kabs == abs) {
-        return readAt(kv.second.first, kv.second.second, entryJson);
+        return readAt(kv.second.offset, kv.second.length, entryJson);
       }
     }
   }
@@ -244,9 +341,13 @@ bool CompileIndex::readAt(size_t off, size_t len,
 bool CompileIndex::saveCache(const std::string &cachePath) const {
   std::ofstream f(cachePath, std::ios::trunc);
   if (!f) return false;
+  // v2：首行版本标记，条目新增 d/dl（directory 内容区间），旧缓存不兼容时
+  // loadCache 返回 false 由调用方重建，避免静默用缺 directory 的旧索引。
+  f << "#logc-idx-v2\n";
   for (auto &kv : idx_) {
-    f << "{\"f\":\"" << kv.first << "\",\"o\":" << kv.second.first
-      << ",\"l\":" << kv.second.second << "}\n";
+    f << "{\"f\":\"" << kv.first << "\",\"o\":" << kv.second.offset
+      << ",\"l\":" << kv.second.length << ",\"d\":" << kv.second.dirOff
+      << ",\"dl\":" << kv.second.dirLen << "}\n";
   }
   return f.good();
 }
@@ -255,6 +356,10 @@ bool CompileIndex::loadCache(const std::string &cachePath,
                              const std::string &jsonPath) {
   std::ifstream f(cachePath);
   if (!f) return false;
+  // 版本检测：旧格式（无首行标记 / 无 d/dl）→ 返回 false，调用方走 build 重建。
+  std::string firstLine;
+  if (!std::getline(f, firstLine) || firstLine != "#logc-idx-v2")
+    return false;
   idx_.clear();
   std::string line;
   while (std::getline(f, line)) {
@@ -302,8 +407,14 @@ bool CompileIndex::loadCache(const std::string &cachePath,
       return std::strtoll(line.c_str() + v, nullptr, 10);
     };
     long long o = num("o"), l = num("l");
+    long long d = num("d"), dl = num("dl");
     if (file.empty() || o < 0 || l < 0) continue;
-    idx_[file] = {static_cast<size_t>(o), static_cast<size_t>(l)};
+    Entry e;
+    e.offset = static_cast<size_t>(o);
+    e.length = static_cast<size_t>(l);
+    if (d > 0) e.dirOff = static_cast<size_t>(d);
+    if (dl > 0) e.dirLen = static_cast<size_t>(dl);
+    idx_[file] = e;
   }
   jsonPath_ = jsonPath;
   // isStale() 用 mtime_ 判断"json 是否比缓存新"。这里必须记缓存文件(生成时刻)的

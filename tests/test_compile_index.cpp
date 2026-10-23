@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -144,4 +145,74 @@ TEST_CASE(index_read_slash_normalize_windows_path) {
   EXPECT_TRUE(idx.readEntry("D:/codeSpace/CDir/vkdemo/src/main.cpp", &entry));
   EXPECT_CONTAINS(entry, "main.cpp");
   std::remove(db.c_str());
+}
+
+TEST_CASE(index_read_relative_file_via_directory) {
+  // 真实 monorepo（鸿蒙等）：file 是相对路径，基准是该条目的 directory 字段，
+  // 不是当前工作目录。用户（VSCode / CLI）传真实绝对路径时应命中。
+  namespace fs = std::filesystem;
+  std::string base =
+      tmpDir() + "/logc_relproj_" +
+      std::to_string(std::chrono::system_clock::now()
+                         .time_since_epoch()
+                         .count());
+  std::string out = base + "/out";                 // compile_commands 的 directory
+  std::string srcDir = base + "/foundation/src";   // 相对 out 向上两级
+  std::string src = srcDir + "/a.cpp";
+  fs::create_directories(out);
+  fs::create_directories(srcDir);
+  {
+    std::ofstream f(src);
+    f << "int a = 1;\n";
+  }
+  std::string db = base + "/db.json";
+  {
+    std::ofstream f(db);
+    f << "[\n"
+      << "  {\"directory\":\"" << out << "\","
+      << "\"file\":\"../foundation/src/a.cpp\","
+      << "\"command\":\"g++ -c ../foundation/src/a.cpp\"}\n"
+      << "]\n";
+  }
+  CompileIndex idx;
+  std::string err;
+  EXPECT_TRUE(idx.build(db, &err));
+
+  std::string entry;
+  // 1) 绝对路径 → 经 directory 拼接 + realpath 命中（相对 file 场景）
+  EXPECT_TRUE(idx.readEntry(src, &entry));
+  EXPECT_CONTAINS(entry, "a.cpp");
+  // 2) 相对路径原样 → 精确命中
+  EXPECT_TRUE(idx.readEntry("../foundation/src/a.cpp", &entry));
+  EXPECT_CONTAINS(entry, "a.cpp");
+
+  // 3) 缓存往返后 d/dl 字段保留，绝对路径仍能命中
+  std::string cache = db + ".logc-idx";
+  EXPECT_TRUE(idx.saveCache(cache));
+  CompileIndex idx2;
+  EXPECT_TRUE(idx2.loadCache(cache, db));
+  EXPECT_TRUE(idx2.readEntry(src, &entry));
+  EXPECT_CONTAINS(entry, "a.cpp");
+
+  fs::remove_all(base);
+}
+
+TEST_CASE(index_cache_v1_rejected) {
+  // 旧版缓存（无 #logc-idx-v2 首行标记）应被拒绝，由调用方重建。
+  std::string p = makeFixture();
+  std::string cache = p + ".logc-idx";
+  {
+    std::ofstream f(cache);
+    f << "{\"f\":\"src/foo.cpp\",\"o\":10,\"l\":50}\n";
+  }
+  CompileIndex idx;
+  EXPECT_FALSE(idx.loadCache(cache, p));
+  // 重建后 v2 缓存可用
+  std::string err;
+  EXPECT_TRUE(idx.build(p, &err));
+  EXPECT_TRUE(idx.saveCache(cache));
+  CompileIndex idx2;
+  EXPECT_TRUE(idx2.loadCache(cache, p));
+  EXPECT_EQ(idx2.size(), idx.size());
+  cleanup(p);
 }

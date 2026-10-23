@@ -23,8 +23,12 @@
 - 分层：VSCode 插件薄壳（选区/右键/applyEdit）→ 短生命周期 CLI（起→解析→返回→退出）
   → LogEngine。不 fork clangd、不常驻进程、不与 clangd 抢内存。
 - CLI 只输出 1-based JSON TextEdit、**不回写文件**；落地与否由调用方 applyEdit 决定。
-- compile_commands 用偏移索引（`.logc-idx`）seek+read 单条取参，绝不整载 1GB；
-  索引按 mtime 失效。
+- compile_commands 用偏移索引（`.logc-idx`，**v2 格式**：首行 `#logc-idx-v2`，条目含
+  `d`/`dl` 即 directory 内容区间）seek+read 单条取参，绝不整载 1GB；索引按 mtime 失效，
+  旧版缓存加载直接返回 false 由调用方重建。
+- `readEntry` 兜底匹配：条目 `file` 为相对路径时，基准是该条目的 `directory` 字段
+  （拼接 + realpath，覆盖鸿蒙等 monorepo 的 `../../../...` + `/srv/workspace/...` 场景），
+  不是 cwd；`file` 为绝对路径时走原有 realpath 归一比较。
 - 幂等（产品要求）：`--comment` 天然跳过已注释语句；`--inject` 不得重复注入——
   单次调用内已按 canonical decl 去重；跨调用检测已有 `[obs]` 行**尚未实现**，属产品待办。
 - 对象观测优先级：有 `operator<<` 直接流式；用户可改类走 friend 注入（需用户显式确认，
