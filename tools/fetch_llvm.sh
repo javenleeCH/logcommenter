@@ -5,6 +5,7 @@
 # 环境变量:
 #   LOGC_LLVM_VERSION   默认 23.1.3
 #   LOGC_LLVM_DEST      默认 .toolchain
+#   LOGC_DISABLE_SSL    =1 时跳过 TLS 校验（代理/自签证书环境，等价 curl -k）
 #   GH_TOKEN / GITHUB_TOKEN  可选（私有仓库或提高限额时使用）
 set -euo pipefail
 
@@ -28,6 +29,10 @@ if [ -f "$DEST/lib/cmake/llvm/LLVMConfig.cmake" ]; then
   exit 0
 fi
 
+# 单一 SSL 开关：LOGC_DISABLE_SSL=1 时跳过证书校验
+INSECURE=()
+if [ "${LOGC_DISABLE_SSL:-0}" = "1" ]; then INSECURE=(-k); fi
+
 TMP="$(mktemp -d)"
 ZIP="$TMP/$ASSET"
 echo "[fetch_llvm] downloading $ASSET ..."
@@ -36,7 +41,7 @@ if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
 else
   AUTH=()
 fi
-curl -fL --retry 3 "${AUTH[@]}" "$URL" -o "$ZIP"
+curl -fL --retry 3 "${INSECURE[@]}" "${AUTH[@]}" "$URL" -o "$ZIP"
 
 # Windows 上 unzip 可能不可用，优先 unzip，回退 PowerShell
 if command -v unzip >/dev/null 2>&1; then
@@ -49,10 +54,5 @@ fi
 rm -rf "$TMP"
 
 echo "[fetch_llvm] installed to $DEST"
-# 打印 CMake 定位变量，方便直接使用
-case "$PLAT" in
-  windows) SUBDIR= ;;
-  *) SUBDIR= ;;
-esac
 echo "LLVM_DIR=$DEST/lib/cmake/llvm"
 echo "Clang_DIR=$DEST/lib/cmake/clang"
