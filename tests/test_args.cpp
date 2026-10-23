@@ -38,6 +38,15 @@ TEST_CASE(args_inject_friend) {
   EXPECT_TRUE(a.friend_);
 }
 
+TEST_CASE(args_friend_with_comment_tolerated) {
+  // --friend 是 inject 专属语义；--comment 下解析不应报错（引擎忽略该开关）
+  std::vector<const char *> v = {"prog", "--comment", "--file", "a.cpp",
+                                 "--friend", "--compile-commands", "cc.json"};
+  auto a = parseVec(v);
+  EXPECT_TRUE(a.error.empty());
+  EXPECT_TRUE(a.action == Action::kComment);
+}
+
 TEST_CASE(args_comment) {
   std::vector<const char *> v = {"prog", "--comment", "--file", "a.cpp",
                                  "--compile-commands", "cc.json"};

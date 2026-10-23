@@ -147,4 +147,9 @@ jobs:
           # 结果必须仍是合法 C++（可再次解析）且重复注入幂等
           python3 tools/e2e_apply_check.py "$EXE" \
             src/sample.cpp "$BD/compile_commands.json"
+          # B 组系统测试（ubuntu only：脚本用系统 clang++ 做编译验证；
+          # 引擎行为平台无关，A 组场景仍双平台验证）
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            python3 tools/e2e_bgroup.py "$EXE"
+          fi
         shell: bash

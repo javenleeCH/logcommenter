@@ -59,3 +59,33 @@ TEST_CASE(edits_to_json_multi_file) {
   EXPECT_TRUE(j.find("\"file\": \"a.cpp\"") < j.find("\"file\": \"widget.h\""));
   EXPECT_CONTAINS(j, "friend ...;");
 }
+
+TEST_CASE(edits_to_json_multi_file_same_group_merged) {
+  // 同一跨文件目标的多个 edit 应合并进同一组（组内按序两条）
+  TextEdit a;
+  a.start = {1, 1};
+  a.end = {1, 1};
+  a.text = "x;";
+  a.file = "w.h";
+  TextEdit b;
+  b.start = {2, 1};
+  b.end = {2, 1};
+  b.text = "y;";
+  b.file = "w.h";
+  std::string j = editsToJson("a.cpp", {a, b});
+  EXPECT_TRUE(j.rfind("[", 0) == 0);
+  EXPECT_CONTAINS(j, "\"file\": \"w.h\"");
+  // w.h 组只出现一次（合并）
+  size_t first = j.find("\"file\": \"w.h\"");
+  EXPECT_TRUE(j.find("\"file\": \"w.h\"", first + 1) == std::string::npos);
+  EXPECT_CONTAINS(j, "x;");
+  EXPECT_CONTAINS(j, "y;");
+}
+
+TEST_CASE(edits_to_json_multi_file_empty) {
+  // 空 edits：无跨文件 edit 时保持单对象格式
+  std::string j = editsToJson("a.cpp", {});
+  EXPECT_FALSE(j.rfind("[", 0) == 0);
+  EXPECT_CONTAINS(j, "\"file\": \"a.cpp\"");
+  EXPECT_CONTAINS(j, "\"edits\": [");
+}
