@@ -141,7 +141,7 @@ jobs:
           # col10-14）：应解析到声明并在声明语句后注入（方案 §3.4）
           "$EXE" --inject --file src/sample.cpp --position 14:12 \
             --compile-commands "$BD/compile_commands.json" > /tmp/e2e_ref.json
-          grep -Fq 'total=' /tmp/e2e_ref.json && echo "E22E inject(position on ref) OK"
+          grep -Fq 'total=' /tmp/e2e_ref.json && echo "E2E inject(position on ref) OK"
           cat /tmp/e2e_ref.json
           # 应用校验：把 inject 的 TextEdit 真正应用到副本上，
           # 结果必须仍是合法 C++（可再次解析）且重复注入幂等
