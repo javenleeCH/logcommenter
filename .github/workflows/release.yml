@@ -1,13 +1,8 @@
-# 发布工作流：多平台现场编译 LLVM 23 静态链接，构建 logcommenter 可执行文件，
-# 并附加到指定 release tag。各平台启用 ccache（ccache 4.x 支持 MSVC），冷编一次后
-# 后续 release 增量构建。macOS 暂不打包（现场编译 LLVM 冷编过久），配置保留可随时补。
-# 只在手动触发或 push 到 v* tag 时运行（不影响日常 CI）。
+# 发布工作流：下载预编译 LLVM 23 静态工具链 release asset（见 toolchain.yml），
+# 构建 logcommenter 可执行文件，附加到指定 release tag。只在手动触发或 push 到 v* tag 时运行。
 name: release
-
-# 上传 release 资产需要 contents: write（workflow_dispatch 默认未开，否则 gh release upload 报 403）
 permissions:
   contents: write
-
 on:
   workflow_dispatch:
     inputs:
@@ -17,7 +12,6 @@ on:
         type: string
   push:
     tags: ['v*']
-
 jobs:
   build:
     name: build (${{ matrix.os }})
@@ -27,90 +21,56 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: logcommenter-linux-x86_64
-            preset: ninja
-            build_dir: out/build/ninja
+            preset: unix-default
+            build_dir: build/unix-default
             exe: logcommenter
-            install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
+            install_ninja: sudo apt-get update && sudo apt-get install -y ninja-build
           - os: windows-latest
             artifact: logcommenter-windows-x86_64
-            preset: ninja-msvc
-            build_dir: out/build/ninja-msvc
+            preset: windows-msvc
+            build_dir: build/windows-msvc
             exe: logcommenter.exe
-            install: choco install ccache -y && choco install ninja -y
+            install_ninja: choco install ninja -y
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # 用 $HOME 展开 ccache 目录（无字面绝对路径，跨平台一致）
-      - name: Set ccache dir
-        run: echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+      - name: Fetch prebuilt LLVM/Clang
+        run: bash tools/fetch_llvm.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
-          # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
-          key: ccache-release-${{ matrix.os }}-llvm-23.1.3
-          # restore-keys 只在极端情况下兜底恢复，平时 key 固定即可命中主缓存
-          restore-keys: |
-            ccache-release-${{ matrix.os }}-
+      - name: Install ninja
+        run: ${{ matrix.install_ninja }}
 
-      # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject
-      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
-      - name: Cache LLVM source (CPM)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ matrix.build_dir }}/_deps/llvm_project-src
-            ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
-          key: llvm-src-${{ matrix.os }}-23.1.3
-
-      - name: Install ccache + ninja
-        run: ${{ matrix.install }}
-
-      # Ninja generator 不像 VS generator 会自动定位 MSVC，需显式加载 MSVC 开发环境
-      # （vcvarsall：cl/link/include/lib 进 PATH）。否则 Windows 上 llvm-tblgen 链接产物
-      # 运行报 0xC0000139（入口点找不到）。仅 Windows 需要。
       - name: Enable MSVC dev environment (for Ninja on Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: Configure
-        # 统一走 CMake preset（ubuntu=auto 工具链，windows=MSVC cl.exe），Windows 环境
-        # 由上方 msvc-dev-cmd 补齐。
-        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake --preset ${{ matrix.preset }} \
+            -DLLVM_DIR="${{ github.workspace }}/.toolchain/lib/cmake/llvm" \
+            -DClang_DIR="${{ github.workspace }}/.toolchain/lib/cmake/clang"
         shell: bash
 
       - name: Build logcommenter
-        # Windows 上 --parallel 限制并行度避免 OOM；Linux 用 nproc
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build --preset ${{ matrix.preset }}-release --target logcommenter --parallel 2
-          else
-            cmake --build --preset ${{ matrix.preset }}-release --target logcommenter --parallel $(nproc)
-          fi
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel $( [ "$RUNNER_OS" = "Windows" ] && echo 4 || nproc )
         shell: bash
 
-      - name: Package zip (platform-prefixed)
+      - name: Package zip
         run: |
           BD="${{ matrix.build_dir }}"
-          # exe 与 clang 内置头同包分发：clang 的 builtin 头（stddef.h 等）只从
-          # <resource-dir>/include 查找，-resource-dir 指向 lib/clang/<ver> 版本目录。
-          # 优先复制构建树 clang-resource-headers 生成的完整内置头（含 tablegen 产物），
-          # 无则回退源码头。
+          TC="${{ github.workspace }}/.toolchain"
           mkdir -p package/lib/clang
+          # 从预编译工具链复制 clang 资源头（含 include/ 的版本目录）
           copied=""
-          for d in "$BD"/_deps/llvm_project-build/lib/clang/*/include; do
+          for d in "$TC"/lib/clang/*/include; do
             if [ -d "$d" ]; then cp -r "$(dirname "$d")" package/lib/clang/; copied=1; break; fi
           done
-          if [ -z "$copied" ]; then
-            mkdir -p package/lib/clang/23.1.3/include
-            cp -r "$BD"/_deps/llvm_project-src/clang/lib/Headers/* package/lib/clang/23.1.3/include/
-          fi
+          if [ -z "$copied" ]; then echo "missing clang resource headers in toolchain" >&2; exit 1; fi
           cp "$BD/${{ matrix.exe }}" "package/${{ matrix.exe }}"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # 在 package 内压缩，路径展平到 zip 根；单引号防 bash 展开 * / \（由 PowerShell 处理）
             powershell -Command 'Set-Location package; Compress-Archive -Path * -DestinationPath ..\${{ matrix.artifact }}.zip -Force'
           else
             (cd package && zip -r ../${{ matrix.artifact }}.zip .)
@@ -133,19 +93,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-
       - name: Resolve tag
         id: tag
         run: |
-          if [ -n "${{ inputs.version }}" ]; then echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT";
-          else echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"; fi
-
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Attach binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          # -R 显式指定仓库，避免 gh 在无 git 上下文的 runner 上报 "not a git repository"
           for f in dist/*/*; do
             [ -f "$f" ] || continue
             echo "== upload $f =="

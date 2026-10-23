@@ -12,7 +12,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            preset: unix-default
+            build_dir: build/unix-default
+          - os: windows-latest
+            preset: windows-msvc
+            build_dir: build/windows-msvc
+          - os: macos-latest
+            preset: unix-default
+            build_dir: build/unix-default
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,16 +37,15 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
       - name: Configure (core only)
-        run: cmake --preset ninja -DLOGCOMMENTER_BUILD_AST=OFF
+        run: cmake --preset ${{ matrix.preset }} -DLOGCOMMENTER_BUILD_AST=OFF
       - name: Build core tests
-        run: cmake --build --preset ninja-debug --target logcommenter_tests
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter_tests
       - name: Run unit tests
-        run: ctest --test-dir out/build/ninja --output-on-failure
+        run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
 
-  # 完整工具（AST 引擎 + CLI）：CPM 全量构建 LLVM/Clang，ubuntu 用系统工具链、
-  # windows 用 MSVC cl.exe（对应 ninja-msvc preset），编译并跑全部单测 + E2E。
-  # 用 ccache 做编译级缓存：即使某次构建失败，已编译的 LLVM 单元也进 ccache，
-  # 下次增量复用，避免每次 push 都全量重编 LLVM。
+  # 完整工具（AST 引擎 + CLI）：下载预编译 LLVM/Clang 静态工具链 release asset（见
+  # toolchain.yml / tools/fetch_llvm.sh），find_package 复用，不再从源码构建 LLVM。
+  # Ubuntu 用系统工具链（unix-default），Windows 用 MSVC（windows-msvc）。
   ast:
     name: ast (${{ matrix.os }})
     strategy:
@@ -45,85 +53,69 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            cfg_preset: ninja
-            build_preset: ninja-release
-            build_dir: out/build/ninja
+            preset: unix-default
+            build_dir: build/unix-default
             exe: logcommenter
             jobs: "$(nproc)"
-            install: sudo apt-get update && sudo apt-get install -y ccache ninja-build
+            install_ninja: sudo apt-get update && sudo apt-get install -y ninja-build
           - os: windows-latest
-            cfg_preset: ninja-msvc
-            build_preset: ninja-msvc-release
-            build_dir: out/build/ninja-msvc
+            preset: windows-msvc
+            build_dir: build/windows-msvc
             exe: logcommenter.exe
-            jobs: "2"
-            install: choco install ccache -y && choco install ninja -y
+            jobs: "4"
+            install_ninja: choco install ninja -y
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # 用 $HOME 展开 ccache 目录（无字面绝对路径，跨平台一致）
-      - name: Set ccache dir
-        run: echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
-      - name: Cache ccache
-        id: ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          # ccache 内容寻址，跨构建累积命中，key 固定按 LLVM 版本（与 LLVM 源码缓存一致），
-          # 不要用 hashFiles(CMakeLists.txt) —— 那样 CMake 一改整份缓存就失效。
-          key: ccache-logcommenter-${{ runner.os }}-llvm-23.1.3
-          restore-keys: |
-            ccache-logcommenter-${{ runner.os }}-
-      - name: Install ccache + ninja
-        run: ${{ matrix.install }}
+
+      # 下载预编译 LLVM（包含静态库、头、CMake config、clang 内置头）
+      - name: Fetch prebuilt LLVM/Clang
+        run: bash tools/fetch_llvm.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install ninja
+        run: ${{ matrix.install_ninja }}
+
       - name: Enable MSVC dev environment (Ninja on Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
-      # CPM 检测到源码已存在则跳过下载/解压。必须同时缓存 subbuild（含 ExternalProject
-      # stamp）：只缓存 src 时每次 configure 仍会重下 1.4GB zip。key 固定按 LLVM 版本。
-      - name: Cache LLVM source (CPM)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ matrix.build_dir }}/_deps/llvm_project-src
-            ${{ matrix.build_dir }}/_deps/llvm_project-subbuild
-          key: llvm-src-${{ runner.os }}-23.1.3
+
+      # CMAKE_BUILD_TYPE 由 preset 固定为 Release；LLVM_DIR/Clang_DIR 指向预编译工具链
       - name: Configure (full, preset)
-        run: cmake --preset ${{ matrix.cfg_preset }} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake --preset ${{ matrix.preset }} \
+            -DLLVM_DIR="${{ github.workspace }}/.toolchain/lib/cmake/llvm" \
+            -DClang_DIR="${{ github.workspace }}/.toolchain/lib/cmake/clang"
         shell: bash
+
       - name: Build full tool
-        run: cmake --build --preset ${{ matrix.build_preset }} --target logcommenter --parallel ${{ matrix.jobs }}
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter --parallel ${{ matrix.jobs }}
         shell: bash
-      - name: Save ccache even on failure
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/ccache
-          key: ${{ steps.ccache.outputs.cache-primary-key }}
+
       - name: Build tests
-        run: cmake --build --preset ${{ matrix.build_preset }} --target logcommenter_tests
+        run: cmake --build ${{ matrix.build_dir }} --target logcommenter_tests
         shell: bash
+
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
         shell: bash
+
       - name: E2E smoke (comment + inject)
         run: |
           set -e
           BD="${{ matrix.build_dir }}"
           EXE="$BD/${{ matrix.exe }}"
+          TC="${{ github.workspace }}/.toolchain"
           # clang 的 builtin 头（stddef.h 等）只从 <resource-dir>/include 查找，
-          # -resource-dir 必须指向直接包含 include/ 的版本目录。按标准结构复制
-          # 构建树 clang-resource-headers 生成的版本目录到 exe 旁（验证随包分发布局）；
-          # 无则回退源码头 23.1.3
+          # -resource-dir 必须指向直接包含 include/ 的版本目录。从预编译工具链复制
+          # 版本目录到 exe 旁（验证随包分发布局）。
           mkdir -p "$BD/lib/clang"
           copied=""
-          for d in "$BD"/_deps/llvm_project-build/lib/clang/*/include; do
+          for d in "$TC"/lib/clang/*/include; do
             if [ -d "$d" ]; then cp -r "$(dirname "$d")" "$BD/lib/clang/"; copied=1; break; fi
           done
-          if [ -z "$copied" ]; then
-            mkdir -p "$BD/lib/clang/23.1.3/include"
-            cp -r "$BD"/_deps/llvm_project-src/clang/lib/Headers/* "$BD/lib/clang/23.1.3/include/"
-          fi
+          if [ -z "$copied" ]; then echo "missing clang resource headers in toolchain" >&2; exit 1; fi
           export LOGCOMMENTER_DEBUG=1
           # --comment：sample.cpp 中含 pengtest 的日志应被注释（输出 TextEdit "// "）
           "$EXE" --comment --file src/sample.cpp \

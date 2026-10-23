@@ -1,19 +1,22 @@
-cmake_minimum_required(VERSION 3.14)
-project(logcommenter)
+cmake_minimum_required(VERSION 3.21)
+
+project(logcommenter LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
   add_compile_options(/utf-8)
 endif()
 
-# 架构分层：
-#  - 纯逻辑核心（logengine/）零 Clang 依赖，本机/快速可编译测试。
-#  - AST 引擎 + CLI（clang/engine_clang + main）依赖 Clang/LibTooling，
-#    由 LOGCOMMENTER_BUILD_AST 控制；统一用 CPM 现场编译 llvm-project，
-#    CMake 保持简单，不依赖系统 LLVM。
-option(LOGCOMMENTER_BUILD_AST "Build AST engine + CLI (needs Clang/LibTooling)" ON)
+# 分层：
+#  - 纯逻辑核心 logengine/ 零 Clang 依赖，可快速编译测试；
+#  - AST 引擎 + CLI 依赖预编译的 LLVM/Clang 静态库（release asset，见
+#    .github/workflows/toolchain.yml；tools/fetch_llvm.sh 下载），通过 find_package 消费。
+# 编译器与构建类型由 CMakePresets.json 控制（windows-msvc / unix-default），不在此处硬编码。
+# 定位预编译工具链：设置 LLVM_DIR / Clang_DIR（CI 由 fetch 脚本输出），或本机已安装 LLVM。
+option(LOGCOMMENTER_BUILD_AST "Build AST engine + CLI (needs LLVM/Clang)" ON)
 
 # ---- 1. core library (zero Clang deps) ----
 add_library(logcommenter_core
@@ -36,51 +39,25 @@ add_executable(logcommenter_tests
 target_link_libraries(logcommenter_tests PRIVATE logcommenter_core)
 add_test(NAME core_tests COMMAND logcommenter_tests)
 
-# ---- 3. AST engine + CLI ----
+# ---- 3. AST engine + CLI (prebuilt LLVM/Clang via find_package) ----
 if(LOGCOMMENTER_BUILD_AST)
+  # ClangConfig 会自动拉入 LLVM；显式写出以便报错信息清晰。
+  find_package(LLVM REQUIRED CONFIG)
+  find_package(Clang REQUIRED CONFIG)
 
-  # ---- AST 引擎统一走 CPM 现场编译 llvm-project（保持 CMake 简单）----
-  include(cmake/CPM.cmake)
-    CPMAddPackage(
-      NAME LLVM_PROJECT
-      URL https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-23.1.3.zip
-      URL_HASH SHA256=2198f03ae4eb6bc6b71cd2a79c60ea9f9ce6bc6bc3a8dcf9e29861f425236746
-      DOWNLOAD_ONLY YES
-    )
-    set(LLVM_ENABLE_PROJECTS "clang" CACHE STRING "启用 Clang")
-    set(LLVM_TARGETS_TO_BUILD "X86" CACHE STRING "目标架构（可选）")
-    set(LLVM_INCLUDE_TESTS OFF CACHE BOOL "不构建测试")
-    set(LLVM_INCLUDE_EXAMPLES OFF CACHE BOOL "不构建示例")
-    set(LLVM_BUILD_TOOLS OFF CACHE BOOL "只构建库")
-    set(LLVM_BUILD_UTILS OFF CACHE BOOL "")
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "静态链接")
-    set(LLVM_ENABLE_RTTI ON CACHE BOOL "Clang AST 需要 RTTI")
-    set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "启用调试断言")
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "构建类型")
-    # EXCLUDE_FROM_ALL：LLVM/Clang 所有 target 不进默认 all 目标，避免 `cmake --build`
-    # 触发全量编译；只有被 logcommenter_engine 依赖的库才会被构建。
-    add_subdirectory(${LLVM_PROJECT_SOURCE_DIR}/llvm ${LLVM_PROJECT_BINARY_DIR} EXCLUDE_FROM_ALL)
+  # 可选：预编译工具链根目录，用于 resource-dir 兑底（CI 下资源头复制到 exe 旁，一般无需）。
+  set(LOGC_LLVM_BIN_DIR "." CACHE PATH "Optional LLVM dir for resource-dir fallback")
 
-    add_library(logcommenter_engine src/clang/engine_clang.cpp)
-    # 运行时给 ClangTool 指定 resource dir（静态链接无法从 argv[0] 推导）
-    target_compile_definitions(logcommenter_engine PRIVATE
-      LOGC_LLVM_BIN_DIR="${LLVM_PROJECT_BINARY_DIR}")
-    target_include_directories(logcommenter_engine PRIVATE
-      ${LLVM_PROJECT_SOURCE_DIR}/llvm/include
-      ${LLVM_PROJECT_SOURCE_DIR}/clang/include
-      ${LLVM_PROJECT_BINARY_DIR}/include
-      ${LLVM_PROJECT_BINARY_DIR}/tools/clang/include
-      src)
-    target_link_directories(logcommenter_engine PRIVATE ${LLVM_LIBRARY_DIRS})
-    target_link_libraries(logcommenter_engine PUBLIC logcommenter_core
-      clangTooling clangASTMatchers clangRewrite clangFrontend
-      clangSerialization clangAST clangBasic clangLex)
-    # EXCLUDE_FROM_ALL 使 clang 内置头目标默认不被构建，但 LibTooling 运行时依赖
-    # 它们（resource-dir include/ 下的 stddef.h 等）。注意：LLVM 23 中内置头由
-    # clang-resource-headers 生成到 <LLVM_BINARY_DIR>/lib/clang/<major>/include；
-    # clang-headers 只是 install 组件别名，不产出文件。
-    # 显式依赖，确保 --target logcommenter 时先生成内置头。
-    add_dependencies(logcommenter_engine clang-resource-headers)
+  add_library(logcommenter_engine src/clang/engine_clang.cpp)
+  target_include_directories(logcommenter_engine PRIVATE
+    ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS} src)
+  target_compile_definitions(logcommenter_engine PRIVATE
+    ${LLVM_DEFINITIONS}
+    LOGC_LLVM_BIN_DIR="${LOGC_LLVM_BIN_DIR}")
+  # 静态库依赖通过 imported targets 传递（ClangConfig 已配置好头目录/依赖/系统库）。
+  target_link_libraries(logcommenter_engine PUBLIC logcommenter_core
+    clangTooling clangASTMatchers clangRewrite clangFrontend
+    clangSerialization clangAST clangBasic clangLex)
 
   add_executable(logcommenter src/main.cpp)
   target_link_libraries(logcommenter PRIVATE logcommenter_engine logcommenter_core)

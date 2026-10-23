@@ -8,12 +8,12 @@
             "name": "logcommenter (inject sample.cpp)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceRoot}/out/build/ninja/logcommenter.exe",
+            "program": "${workspaceRoot}/build/windows-msvc/logcommenter.exe",
             "args": [
                 "--inject",
                 "--file", "${workspaceRoot}/src/sample.cpp",
                 "--var", "total",
-                "--compile-commands", "${workspaceRoot}/out/build/ninja/compile_commands.json"
+                "--compile-commands", "${workspaceRoot}/build/windows-msvc/compile_commands.json"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceRoot}",

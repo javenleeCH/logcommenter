@@ -1,13 +1,8 @@
 {
-    "clangd.arguments": [
-        "--compile-commands-dir=out/build/VS",
-    ],
     "cmake.buildArgs": [
         "--verbose"
     ],
     "cmake.configureSettings": {
-        // "CMAKE_TOOLCHAIN_FILE": "D:/ProgramData/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS": "TRUE",
-    },
-
+        "CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS": "TRUE"
+    }
 }

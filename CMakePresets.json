@@ -1,73 +1,50 @@
 {
-    "version": 8,
-    "configurePresets": [
-        {
-            "name": "ninja",
-            "displayName": "Ninja (cross-platform, auto toolchain)",
-            "description": "Toolchain auto-detected (cl / gcc / clang); override via CC/CXX env or -DCMAKE_CXX_COMPILER=...",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/out/build/${presetName}",
-            "cacheVariables": {
-                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-            }
-        },
-        {
-            "name": "ninja-msvc",
-            "displayName": "Ninja + MSVC (cl.exe)",
-            "description": "Windows only: cl.exe; run inside MSVC dev environment (vcvarsall / msvc-dev-cmd)",
-            "inherits": "ninja",
-            "cacheVariables": {
-                "CMAKE_C_COMPILER": "cl.exe",
-                "CMAKE_CXX_COMPILER": "cl.exe"
-            }
-        },
-        {
-            "name": "ninja-clang-cl",
-            "displayName": "Ninja + clang-cl",
-            "description": "Windows only: clang-cl.exe (LLVM/Clang toolchain)",
-            "inherits": "ninja",
-            "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang-cl.exe",
-                "CMAKE_CXX_COMPILER": "clang-cl.exe"
-            }
-        },
-        {
-            "name": "ninja-clang",
-            "displayName": "Ninja + Clang (Unix/macOS)",
-            "description": "Unix/macOS: clang / clang++",
-            "inherits": "ninja",
-            "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang",
-                "CMAKE_CXX_COMPILER": "clang++"
-            }
-        }
-    ],
-    "buildPresets": [
-        { "name": "ninja-debug", "displayName": "Debug", "configurePreset": "ninja", "configuration": "Debug" },
-        { "name": "ninja-release", "displayName": "Release", "configurePreset": "ninja", "configuration": "Release" },
-        { "name": "ninja-msvc-debug", "displayName": "MSVC Debug", "configurePreset": "ninja-msvc", "configuration": "Debug" },
-        { "name": "ninja-msvc-release", "displayName": "MSVC Release", "configurePreset": "ninja-msvc", "configuration": "Release" },
-        { "name": "ninja-clang-cl-debug", "displayName": "clang-cl Debug", "configurePreset": "ninja-clang-cl", "configuration": "Debug" },
-        { "name": "ninja-clang-cl-release", "displayName": "clang-cl Release", "configurePreset": "ninja-clang-cl", "configuration": "Release" },
-        { "name": "ninja-clang-debug", "displayName": "Clang Debug", "configurePreset": "ninja-clang", "configuration": "Debug" },
-        { "name": "ninja-clang-release", "displayName": "Clang Release", "configurePreset": "ninja-clang", "configuration": "Release" }
-    ],
-    "testPresets": [
-        { "name": "ninja", "displayName": "run unit tests", "configurePreset": "ninja", "output": { "outputOnFailure": true } },
-        { "name": "ninja-msvc", "displayName": "run unit tests (MSVC)", "configurePreset": "ninja-msvc", "output": { "outputOnFailure": true } },
-        { "name": "ninja-clang-cl", "displayName": "run unit tests (clang-cl)", "configurePreset": "ninja-clang-cl", "output": { "outputOnFailure": true } },
-        { "name": "ninja-clang", "displayName": "run unit tests (clang)", "configurePreset": "ninja-clang", "output": { "outputOnFailure": true } }
-    ],
-    "workflowPresets": [
-        {
-            "name": "all",
-            "displayName": "configure + build + test (one command)",
-            "steps": [
-                { "type": "configure", "name": "ninja" },
-                { "type": "build", "name": "ninja-debug" },
-                { "type": "test", "name": "ninja" }
-            ]
-        }
-    ]
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "inherits": "base",
+      "displayName": "Windows MSVC x64",
+      "description": "仅在 Windows 上生效，自动激活并使用 MSVC 编译器",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "toolset": {
+        "value": "host=x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "unix-default",
+      "inherits": "base",
+      "displayName": "Linux/macOS Default",
+      "description": "在 Linux 或 Mac 上使用系统默认的 GCC/Clang",
+      "condition": {
+        "type": "inList",
+        "string": "${hostSystemName}",
+        "list": ["Linux", "Darwin"]
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ]
 }
