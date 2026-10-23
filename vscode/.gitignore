@@ -1,0 +1,3 @@
+# VSCode 插件构建产物与依赖（源码在 src/ + test/，发布/CI 时 tsc 生成 dist/）
+node_modules/
+dist/

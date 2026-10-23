@@ -1,52 +1,57 @@
-// LogCommenter VSCode 插件薄壳（M2）
+// LogCommenter VSCode 插件薄壳（M2，TypeScript）
 // 职责：拿选区/光标 → 调短生命周期 CLI → 解析 TextEdit JSON → applyEdit 落地。
 // 不解析源码、不常驻进程；所有语义决策在 CLI（LogEngine）内。
 //
 // 协议（CLI 输出，见 src/logengine/text_edit.{h,cpp}）：
-//   单文件：{ "file": "a.cpp", "edits": [{ range: {start:{line,col},end:{line,col}}, text }] }
+//   单文件：{ "file": "a.cpp", "edits": [...] }
 //   跨文件：[ { "file": "a.cpp", "edits": [...] }, { "file": "a.h", "edits": [...] } ]
 //   line/col 均 1-based；start==end 为纯插入，text 插入到 (line,col) 字符之前；
 //   col = 行长+1 表示行尾。col 是 UTF-8 字节列（LibTooling spelling column）。
 // 本插件负责：1-based → 0-based；字节列 ↔ UTF-16 字符列（VSCode 用 UTF-16 code units）。
 
-const vscode = require('vscode');
-const { execFile } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const { byteColToUtf16, utf16ColToByte, normalizeGroups } = require('./protocol');
+import * as vscode from 'vscode';
+import { execFile } from 'child_process';
+import * as path from 'path';
+import * as fs from 'fs';
+import { byteColToUtf16, utf16ColToByte, normalizeGroups, EditGroup } from './protocol';
 
 const CLI_TIMEOUT_MS = 20000;
 
-/** @type {vscode.OutputChannel} */
-let channel;
+let channel: vscode.OutputChannel | undefined;
+let _context: vscode.ExtensionContext | undefined;
 
-function activate(context) {
+export function activate(context: vscode.ExtensionContext): void {
+  _context = context;
   channel = vscode.window.createOutputChannel('LogCommenter');
   context.subscriptions.push(
-    vscode.commands.registerCommand('logcommenter.inject', () =>
-      inject(context, false)),
-    vscode.commands.registerCommand('logcommenter.injectFriend', () =>
-      inject(context, true)),
-    vscode.commands.registerCommand('logcommenter.comment', () =>
-      comment(context)),
+    vscode.commands.registerCommand('logcommenter.inject', () => inject(false)),
+    vscode.commands.registerCommand('logcommenter.injectFriend', () => inject(true)),
+    vscode.commands.registerCommand('logcommenter.comment', () => comment()),
     channel
   );
 }
 
-function deactivate() {}
+export function deactivate(): void {
+  // 薄壳无常驻资源
+}
 
 // ---------------------------------------------------------------------------
 // 定位
 // ---------------------------------------------------------------------------
 
-function wordAt(editor, pos) {
+function wordAt(editor: vscode.TextEditor, pos: vscode.Position): string {
   const range = editor.document.getWordRangeAtPosition(pos);
   if (!range) return '';
   return editor.document.getText(range).trim();
 }
 
+interface Target {
+  name: string;
+  pos: vscode.Position;
+}
+
 // 取注入目标：变量名 + 光标位置（VSCode Position）
-function resolveTarget(editor) {
+function resolveTarget(editor: vscode.TextEditor): Target {
   const sel = editor.selection;
   if (!sel.isEmpty && sel.start.line === sel.end.line) {
     const name = editor.document.getText(sel).trim();
@@ -60,25 +65,26 @@ function resolveTarget(editor) {
 // CLI 执行与路径定位
 // ---------------------------------------------------------------------------
 
-function resolveCli() {
+function resolveCli(): string {
   const cfg = vscode.workspace.getConfiguration('logcommenter');
-  const p = cfg.get('cliPath', '');
+  const p = cfg.get<string>('cliPath', '');
   return p ? p : 'logcommenter';
 }
 
-async function resolveCompileCommands(context, startDir) {
+async function resolveCompileCommands(
+  context: vscode.ExtensionContext, startDir: string): Promise<string> {
   const cfg = vscode.workspace.getConfiguration('logcommenter');
-  const p = cfg.get('compileCommands', '');
+  const p = cfg.get<string>('compileCommands', '');
   if (p) return p;
   // 向上探测 + workspaceState 缓存（同一目录只探一次）
   const cacheKey = 'cc:' + startDir;
-  const cached = context.workspaceState.get(cacheKey);
+  const cached = context.workspaceState.get<string>(cacheKey);
   if (cached && fs.existsSync(cached)) return cached;
   let dir = startDir;
   for (;;) {
     const cand = path.join(dir, 'compile_commands.json');
     if (fs.existsSync(cand)) {
-      context.workspaceState.update(cacheKey, cand);
+      void context.workspaceState.update(cacheKey, cand);
       return cand;
     }
     const parent = path.dirname(dir);
@@ -90,19 +96,24 @@ async function resolveCompileCommands(context, startDir) {
     ' 向上探测；可设置 logcommenter.compileCommands 指定）');
 }
 
-function runCli(args) {
-  return new Promise((resolve, reject) => {
+function runCli(args: string[]): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     const bin = resolveCli();
-    channel.appendLine('$ ' + bin + ' ' + args.join(' '));
-    execFile(bin, args, { timeout: CLI_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, windowsHide: true },
-      (err, stdout, stderr) => {
-        if (err) {
-          if (err.killed) return reject(new Error('CLI 超时（' + CLI_TIMEOUT_MS / 1000 + 's）'));
-          const msg = (stderr || '').trim();
-          return reject(new Error(msg ? msg.split('\n')[0] : err.message));
+    channel?.appendLine('$ ' + bin + ' ' + args.join(' '));
+    execFile(bin, args, {
+      timeout: CLI_TIMEOUT_MS,
+      maxBuffer: 32 * 1024 * 1024,
+      windowsHide: true
+    }, (err, stdout, stderr) => {
+      if (err) {
+        if ((err as { killed?: boolean }).killed) {
+          return reject(new Error('CLI 超时（' + CLI_TIMEOUT_MS / 1000 + 's）'));
         }
-        resolve(stdout);
-      });
+        const msg = (stderr || '').trim();
+        return reject(new Error(msg ? msg.split('\n')[0] : err.message));
+      }
+      resolve(stdout);
+    });
   });
 }
 
@@ -110,7 +121,7 @@ function runCli(args) {
 // TextEdit JSON → VSCode WorkspaceEdit
 // ---------------------------------------------------------------------------
 
-async function applyEdits(groups) {
+async function applyEdits(groups: EditGroup[]): Promise<{ ok: boolean; count: number }> {
   const we = new vscode.WorkspaceEdit();
   let count = 0;
   for (const g of groups) {
@@ -138,12 +149,12 @@ async function applyEdits(groups) {
 // 命令
 // ---------------------------------------------------------------------------
 
-async function inject(context, withFriend) {
+async function inject(withFriend: boolean): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor) return vscode.window.showErrorMessage('LogCommenter: 请先打开文件');
+  if (!editor) return void vscode.window.showErrorMessage('LogCommenter: 请先打开文件');
   const { name, pos } = resolveTarget(editor);
   if (!name) {
-    return vscode.window.showErrorMessage(
+    return void vscode.window.showErrorMessage(
       'LogCommenter: 未选中变量，或光标不在标识符上（C++ 标识符仅含字母/数字/下划线）');
   }
   if (withFriend) {
@@ -153,7 +164,7 @@ async function inject(context, withFriend) {
     if (ok !== '继续') return;
   }
   try {
-    const cc = await resolveCompileCommands(context, path.dirname(editor.document.uri.fsPath));
+    const cc = await resolveCompileCommands(context(), path.dirname(editor.document.uri.fsPath));
     const lineText = editor.document.lineAt(pos.line).text;
     const args = [
       '--inject',
@@ -165,21 +176,22 @@ async function inject(context, withFriend) {
     if (withFriend) args.push('--friend');
     const out = await runCli(args);
     const groups = normalizeGroups(out);
-    const { ok, count } = await applyEdits(groups);
-    if (!ok) return vscode.window.showErrorMessage('LogCommenter: applyEdit 失败');
+    const { ok: applied, count } = await applyEdits(groups);
+    if (!applied) return void vscode.window.showErrorMessage('LogCommenter: applyEdit 失败');
     const files = groups.map(g => path.basename(g.file)).join(', ');
-    channel.appendLine('-> 已插入 ' + count + ' 处 edit：' + files);
-    vscode.window.setStatusBarMessage('LogCommenter: 已注入 ' + count + ' 处观测日志', 3000);
+    channel?.appendLine('-> 已插入 ' + count + ' 处 edit：' + files);
+    void vscode.window.setStatusBarMessage('LogCommenter: 已注入 ' + count + ' 处观测日志', 3000);
   } catch (err) {
-    vscode.window.showErrorMessage('LogCommenter: ' + err.message);
+    void vscode.window.showErrorMessage('LogCommenter: ' +
+      (err instanceof Error ? err.message : String(err)));
   }
 }
 
-async function comment(context) {
+async function comment(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor) return vscode.window.showErrorMessage('LogCommenter: 请先打开文件');
+  if (!editor) return void vscode.window.showErrorMessage('LogCommenter: 请先打开文件');
   try {
-    const cc = await resolveCompileCommands(context, path.dirname(editor.document.uri.fsPath));
+    const cc = await resolveCompileCommands(context(), path.dirname(editor.document.uri.fsPath));
     const args = [
       '--comment',
       '--file', editor.document.uri.fsPath,
@@ -187,17 +199,22 @@ async function comment(context) {
     ];
     const out = await runCli(args);
     const groups = normalizeGroups(out);
-    const { ok, count } = await applyEdits(groups);
-    if (!ok) return vscode.window.showErrorMessage('LogCommenter: applyEdit 失败');
-    channel.appendLine('-> 已注释 ' + count + ' 处日志');
+    const { ok: applied, count } = await applyEdits(groups);
+    if (!applied) return void vscode.window.showErrorMessage('LogCommenter: applyEdit 失败');
+    channel?.appendLine('-> 已注释 ' + count + ' 处日志');
     if (count === 0) {
-      vscode.window.showInformationMessage('LogCommenter: 未找到带 pengtest 标记的日志');
+      void vscode.window.showInformationMessage('LogCommenter: 未找到带 pengtest 标记的日志');
     } else {
-      vscode.window.setStatusBarMessage('LogCommenter: 已注释 ' + count + ' 处日志', 3000);
+      void vscode.window.setStatusBarMessage('LogCommenter: 已注释 ' + count + ' 处日志', 3000);
     }
   } catch (err) {
-    vscode.window.showErrorMessage('LogCommenter: ' + err.message);
+    void vscode.window.showErrorMessage('LogCommenter: ' +
+      (err instanceof Error ? err.message : String(err)));
   }
 }
 
-module.exports = { activate, deactivate };
+// 命令回调需要 ExtensionContext（compile_commands 缓存用）；activate 时闭包注入
+function context(): vscode.ExtensionContext {
+  if (!_context) throw new Error('extension not activated');
+  return _context;
+}

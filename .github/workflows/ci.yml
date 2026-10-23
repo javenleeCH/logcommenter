@@ -43,20 +43,24 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
 
-  # VSCode 插件薄壳：协议层单测（node 内置 test runner，零依赖，秒级）
+  # VSCode 插件薄壳（TypeScript）：tsc 编译 + 协议层单测（node 内置 runner，秒级）
   plugin:
     name: plugin (vscode)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Syntax check
-        run: |
-          node --check vscode/extension.js
-          node --check vscode/protocol.js
-      - name: Protocol unit tests
-        run: |
-          cd vscode
-          node --test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install deps
+        working-directory: vscode
+        run: npm install --no-audit --no-fund
+      - name: Build (tsc)
+        working-directory: vscode
+        run: npm run build
+      - name: Protocol unit tests (compiled)
+        working-directory: vscode
+        run: node --test dist/test/protocol.test.js
 
   # 完整工具（AST 引擎 + CLI）：下载预编译 LLVM/Clang 静态工具链 release asset（见
   # toolchain.yml / tools/fetch_llvm.sh），find_package 复用，不再从源码构建 LLVM。

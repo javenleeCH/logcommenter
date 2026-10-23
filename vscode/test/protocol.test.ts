@@ -1,9 +1,8 @@
-// 协议层单测：node --test test/
+// 协议层单测：npm test（tsc 编译后 node --test dist/test/protocol.test.js）
 // 覆盖：字节列↔UTF-16 换算（含中文/多字节字符）、跨文件数组协议、edit 定位。
-const test = require('node:test');
-const assert = require('node:assert');
-const { byteColToUtf16, utf16ColToByte, normalizeGroups, editPositions } =
-  require('../protocol.js');
+import { test } from 'node:test';
+import assert from 'node:assert';
+import { byteColToUtf16, utf16ColToByte, normalizeGroups, editPositions } from '../src/protocol';
 
 test('ascii 行列恒等', () => {
   const ascii = 'int total = 42;';

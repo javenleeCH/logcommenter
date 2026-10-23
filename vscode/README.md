@@ -4,6 +4,18 @@ C++ 源码日志工具薄壳：右键一键 **注释日志**（`pengtest` 标记
 语义决策全部在短生命周期 CLI（LogEngine，基于 Clang/LibTooling）内完成，本插件只做
 选区 → 调进程 → applyEdit 落地，不常驻、不解析源码、不与 clangd 抢内存。
 
+## 构建（TypeScript）
+
+```bash
+cd vscode
+npm install          # devDeps: typescript / @types/node / @types/vscode
+npm run build        # tsc → dist/（package.json main 指向 dist/src/extension.js）
+npm test             # build + node --test dist/test/protocol.test.js
+```
+
+源码在 `src/`（`extension.ts` 薄壳主逻辑 + `protocol.ts` 协议层），单测在 `test/`。
+`dist/` 为编译产物（gitignore），发布/CI 时构建。
+
 ## 安装
 
 1. 先安装 CLI：从 [GitHub Releases](https://github.com/javenleeCH/logcommenter/releases/latest)
@@ -12,7 +24,7 @@ C++ 源码日志工具薄壳：右键一键 **注释日志**（`pengtest` 标记
 2. 安装插件本体：
    - 源码方式：`npm install -g @vscode/vsce && vsce package` 生成 `.vsix`，
      VSCode 扩展面板 → `...` → 从 VSIX 安装。
-   - 或直接把本目录 `vscode/` 拷到 `~/.vscode/extensions/logcommenter/`。
+   - 或先把 `npm run build` 的产物 + `package.json` 拷到 `~/.vscode/extensions/logcommenter/`。
 
 ## 使用
 
