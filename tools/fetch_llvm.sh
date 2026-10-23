@@ -56,13 +56,16 @@ fi
 [ -n "$ZIP" ] && [ -f "$ZIP" ] || { echo "[fetch_llvm] download failed: $ASSET" >&2; exit 1; }
 echo "[fetch_llvm] downloaded $(du -h "$ZIP" | cut -f1)"
 
-# Windows 上 unzip 可能不可用，优先 unzip，回退 PowerShell
-if command -v unzip >/dev/null 2>&1; then
-  unzip -q "$ZIP" -d "$DEST"
-else
+# Windows: 必须用 PowerShell Expand-Archive（toolchain 用 Compress-Archive 打包，zip 条目
+# 用反斜杠作路径分隔符，Git-bash 的 unzip 不认）。其余平台用 unzip。
+if [ "$PLAT" = "windows" ]; then
   WINZIP=$(cygpath -w "$ZIP")
   WINDEST=$(cygpath -w "$DEST")
-  powershell -Command "Expand-Archive -Path '$WINZIP' -DestinationPath '$WINDEST' -Force"
+  powershell -NoProfile -Command "Expand-Archive -LiteralPath '$WINZIP' -DestinationPath '$WINDEST' -Force"
+elif command -v unzip >/dev/null 2>&1; then
+  unzip -q "$ZIP" -d "$DEST"
+else
+  echo "no extraction tool available (need unzip)" >&2; exit 1
 fi
 rm -rf "$TMP"
 
