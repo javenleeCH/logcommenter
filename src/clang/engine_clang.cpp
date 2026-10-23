@@ -10,6 +10,8 @@
 #include <vector>
 #include <set>
 
+#include <llvm/ADT/SmallVector.h>
+
 #ifdef _WIN32
 #include <process.h>  // _getpid
 #else
@@ -41,6 +43,50 @@ using namespace clang::tooling;
 
 namespace logc {
 namespace {
+
+// 取 loc 所在行的前导空白（真实缩进，跟随上下文）。
+std::string lineIndentAt(const SourceManager &SM, SourceLocation loc) {
+  unsigned line = SM.getSpellingLineNumber(loc);
+  FileID fid = SM.getFileID(loc);
+  SourceLocation ls = SM.translateLineCol(fid, line, 1);
+  bool invalid = false;
+  const char *data = SM.getCharacterData(ls, &invalid);
+  if (invalid || !data) return "";
+  std::string ind;
+  for (int i = 0; i < 128 && data[i] != '\0'; ++i) {
+    char c = data[i];
+    if (c == ' ' || c == '\t') ind += c;
+    else break;
+  }
+  return ind;
+}
+
+// 从某条语句向上找最近的 enclosing FunctionDecl（全局变量观测点定位）。
+const FunctionDecl *enclosingFunction(ASTContext &Ctx, const Stmt *s) {
+  llvm::SmallVector<const Stmt *, 16> stack;
+  stack.push_back(s);
+  while (!stack.empty()) {
+    const Stmt *cur = stack.pop_back_val();
+    for (auto &p : Ctx.getParents(*cur)) {
+      if (const auto *FD = p.get<FunctionDecl>()) return FD;
+      if (const auto *st = p.get<Stmt>()) stack.push_back(st);
+    }
+  }
+  return nullptr;
+}
+
+// 幂等探测：data 起点之后至多 256 字符 / 两个换行内是否已出现 marker。
+bool textHasMarker(const char *data, const std::string &marker) {
+  if (!data || marker.empty()) return false;
+  int newlines = 0;
+  for (int i = 0; i < 256 && data[i] != '\0'; ++i) {
+    if (data[i] == '\n' && ++newlines > 2) break;
+    if (data[i] == marker[0] &&
+        std::strncmp(data + i, marker.c_str(), marker.size()) == 0)
+      return true;
+  }
+  return false;
+}
 
 // 收集插入点（SourceLocation + 文本），文件处理结束后统一转 TextEdit
 struct Collector {
@@ -124,10 +170,6 @@ class Observer : public MatchFinder::MatchCallback {
                             : nullptr;
     if (!VD) VD = res.Nodes.getNodeAs<VarDecl>("target_var");
     if (!VD) return;
-    // 产品范围（方案 F1）：仅函数局部变量。全局/类成员观测需要 friend 注入等
-    // 有副作用方案（方案 §4.1）、形参观测需插函数体开头，均未支持——
-    // 宁可不插，不能生成破坏语法的 edit。
-    if (!VD->getParentFunctionOrMethod() || isa<ParmVarDecl>(VD)) return;
     // 位置模式：光标必须落在命中的节点（声明或引用）自身范围内。
     // 顺序要求：先位置过滤再 seen_ 去重——varDecl 与 declRefExpr 两个 matcher
     // 对同一变量各回调一次，若先去重，"位置在引用处"的命中会被未过位置的
@@ -135,6 +177,15 @@ class Observer : public MatchFinder::MatchCallback {
     if (args_.line > 0 &&
         !locInRange(res, Ref ? Ref->getSourceRange() : VD->getSourceRange()))
       return;
+    // 变量来源分三类：
+    //   local  —— 函数局部变量：声明语句之后插入（原有逻辑）
+    //   param  —— 形参：函数体开头插入
+    //   global —— 全局变量 / 类静态成员：仅 position 模式 + 引用处命中
+    //             （引用发生在函数内）才可确定观测点，插到该函数体开头；
+    //             纯 --var 无法确定观测点（全局作用域不能插语句），跳过。
+    const bool isParam = isa<ParmVarDecl>(VD);
+    const bool isLocal = !isParam && VD->getParentFunctionOrMethod() != nullptr;
+    if (!isParam && !isLocal && (args_.line <= 0 || !Ref)) return;
     if (!seen_.insert(VD->getCanonicalDecl()).second) return;
 
     std::string type = VD->getType().getAsString();
@@ -152,14 +203,25 @@ class Observer : public MatchFinder::MatchCallback {
              var + " << std::endl;";
       marker = "\"[obs] " + var + " (ptr)=\"";
     }
-    // 插入点：声明语句（含 ';'）之后。旧实现插在声明末 token 之后（即
-    // initializer 与 ';' 之间），edit 应用后把 "42" 劈成两半、产生非法代码。
-    SourceLocation at = insertLocAfterDecl(res, VD);
+    // 插入点按来源分派：
+    //   local  —— 声明语句（含 ';'）之后（旧逻辑，已修过"把 42 劈两半"缺陷）；
+    //   param / global —— 所在函数体 { 之后（形参在定义处、全局在引用所在函数）。
+    SourceLocation at;
+    if (isLocal) {
+      at = insertLocAfterDecl(res, VD);
+    } else if (isParam) {
+      at = insertLocAtFunctionBodyStart(
+          res, dyn_cast<FunctionDecl>(VD->getParentFunctionOrMethod()));
+    } else {
+      at = insertLocAtFunctionBodyStart(res, enclosingFunction(*res.Context, Ref));
+    }
     if (at.isInvalid()) return;
     // 幂等（方案 §3.4）：插入点后两行内已有该变量的 [obs] 观测行则跳过，
     // 重复调用不叠加。
     if (alreadyObserved(res, at, marker)) return;
-    col_->inserts.push_back({at, "\n    " + line});
+    // 缩进跟随上下文：新日志行与插入点所在行（声明行 / 函数体 { 行）同缩进。
+    std::string indent = lineIndentAt(res.Context->getSourceManager(), at);
+    col_->inserts.push_back({at, "\n" + indent + line});
   }
 
   // 插入点：优先声明语句结尾（DeclStmt，含 ';'）之后；for/if/switch/while
@@ -194,6 +256,19 @@ class Observer : public MatchFinder::MatchCallback {
     return VD->getSourceRange().getEnd().getLocWithOffset(1);
   }
 
+  // 插入点：函数体 { 之后（形参 / 全局变量观测）。仅函数**定义**（有复合体）
+  // 支持；函数声明（无体）放弃——插进去会破坏语法。
+  SourceLocation insertLocAtFunctionBodyStart(const MatchFinder::MatchResult &res,
+                                              const FunctionDecl *FD) const {
+    if (!FD) return SourceLocation();
+    const Stmt *bodyStmt = FD->getBody();
+    const auto *body = bodyStmt ? dyn_cast<CompoundStmt>(bodyStmt) : nullptr;
+    if (!body) return SourceLocation();
+    SourceManager &SM = res.Context->getSourceManager();
+    const LangOptions &LO = res.Context->getLangOpts();
+    return Lexer::getLocForEndOfToken(body->getBeginLoc(), 0, SM, LO);
+  }
+
   // 幂等探测：插入点后的源码（至多两行）已含该变量的观测标记则视为已注入。
   bool alreadyObserved(const MatchFinder::MatchResult &res,
                        SourceLocation at, const std::string &marker) const {
@@ -202,16 +277,7 @@ class Observer : public MatchFinder::MatchCallback {
     bool invalid = false;
     const char *data = SM.getCharacterData(at, &invalid);
     if (invalid || !data) return false;
-    // clang MemoryBuffer 保证 NUL 结尾；窗口取 256 字符/两个换行足够覆盖
-    // 注入文本 "\n    std::cout << \"[obs] var=...\""
-    int newlines = 0;
-    for (size_t i = 0; i < 256 && data[i] != '\0'; ++i) {
-      if (data[i] == '\n' && ++newlines > 2) break;
-      if (data[i] == marker[0] &&
-          std::strncmp(data + i, marker.c_str(), marker.size()) == 0)
-        return true;
-    }
-    return false;
+    return textHasMarker(data, marker);
   }
 
   // 位置过滤：传入的 position (line,col) 必须落在范围上（含边界）。
@@ -303,6 +369,31 @@ class EngineAction : public ASTFrontendAction {
       e.end = e.start;
       e.text = p.second;
       edits_->push_back(e);
+    }
+    // 整行模式（产品方案 §3.4：选中整行插入该行前）：--position 未落在任何
+    // 变量 token 上（无注入）且未指定 --var 时，在选中行行首插入一行位置
+    // 标记日志，缩进跟随原行；空行 / 该行已注入过则跳过。
+    if (edits_->empty() && args_.action == Action::kInject &&
+        args_.line > 0 && args_.var.empty()) {
+      const unsigned L = static_cast<unsigned>(args_.line);
+      SourceLocation ls = SM.translateLineCol(SM.getMainFileID(), L, 1);
+      if (ls.isValid()) {
+        bool invalid = false;
+        const char *data = SM.getCharacterData(ls, &invalid);
+        if (!invalid && data && *data != '\0' && *data != '\n' && *data != '\r') {
+          std::string marker = "\"[obs] line " + std::to_string(L) + "\"";
+          if (!textHasMarker(data, marker)) {
+            TextEdit e;
+            e.start.line = static_cast<int>(L);
+            e.start.col = 1;
+            e.end = e.start;
+            e.text = lineIndentAt(SM, ls) +
+                     "std::cout << \"[obs] line " + std::to_string(L) +
+                     "\" << std::endl;\n";
+            edits_->push_back(e);
+          }
+        }
+      }
     }
     if (edits_->empty() && err_) {
       *err_ = "no matching target found";
@@ -444,6 +535,27 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
           std::vector<std::string> vec(args.begin(), args.end());
           std::string cur(filename.data(), filename.size());
           auto cleaned = stripSourceFileArg(vec, cur);
+          // 剥离写文件类参数（真实 monorepo 常见）：-MMD/-MD/-MF/-MT/-MQ/-o/
+          // -serialize-diagnostic-file 等。LibTooling 只做前端解析、不产出
+          // .o/.d，保留会让 clang 前端尝试写 obj/... 依赖文件（本机 obj 目录
+          // 往往不存在）而报错。只删参数本身与紧随的值，不动其余编译选项。
+          for (size_t i = 0; i < cleaned.size();) {
+            const std::string &a = cleaned[i];
+            if (a == "-MMD" || a == "-MD" || a == "-MG") {
+              cleaned.erase(cleaned.begin() + static_cast<long>(i));
+              continue;
+            }
+            if (a == "-MF" || a == "-MT" || a == "-MQ" || a == "-o" ||
+                a == "-serialize-diagnostic-file") {
+              if (i + 1 < cleaned.size())
+                cleaned.erase(cleaned.begin() + static_cast<long>(i),
+                              cleaned.begin() + static_cast<long>(i) + 2);
+              else
+                cleaned.erase(cleaned.begin() + static_cast<long>(i));
+              continue;
+            }
+            ++i;
+          }
           CommandLineArguments out(cleaned.begin(), cleaned.end());
           if (!rd.empty()) out.push_back("-resource-dir=" + rd);
           // 健壮化：MSVC(CMake) 的 compile_commands command 是 cl.exe / clang-cl。
