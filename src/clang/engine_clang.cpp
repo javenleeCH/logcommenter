@@ -27,6 +27,7 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Basic/Version.h"
@@ -155,6 +156,18 @@ class Observer : public MatchFinder::MatchCallback {
     return false;
   }
 
+  // 判定 Record 是否模板（primary 模板定义或任意特化）。
+  // RecordDecl::isTemplated() 对隐式实例化特化（如 Box<int>）在某些 LLVM 版本
+  // 返回 false，会把 `const Box&`（缺模板参数）的非法 friend 注入模板类。
+  // 这里用描述模板 + 特化种类双判，覆盖 primary 定义与全部特化形态。
+  static bool isTemplatedRecord(const RecordDecl *RD) {
+    if (const auto *CXX = dyn_cast<CXXRecordDecl>(RD)) {
+      if (CXX->getDescribedClassTemplate()) return true;
+      return CXX->getTemplateSpecializationKind() != TSK_Undeclared;
+    }
+    return false;
+  }
+
   // 类内是否已有 operator<<（friend 声明或成员）。幂等：已注入过 friend 就不再注入。
   static bool recordHasStreamOperator(const RecordDecl *RD) {
     for (const Decl *D : RD->decls()) {
@@ -272,7 +285,7 @@ class Observer : public MatchFinder::MatchCallback {
       const auto *RT = qt->getAs<RecordType>();
       const RecordDecl *RD = RT ? RT->getDecl()->getDefinition() : nullptr;
       if (RD && RD->getBraceRange().isValid() && RD->getIdentifier() &&
-          !RD->isTemplated() && !recordHasStreamOperator(RD)) {
+          !isTemplatedRecord(RD) && !recordHasStreamOperator(RD)) {
         SourceLocation be = RD->getBraceRange().getEnd();
         SourceManager &SM = res.Context->getSourceManager();
         std::string indent = lineIndentAt(SM, be);
