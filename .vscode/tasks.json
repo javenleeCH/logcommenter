@@ -18,6 +18,22 @@
 			"isDefault": true
 		},
 		"problemMatcher": "$msCompile"
+	},
+	{
+		"label": "Build (Windows MSVC Debug)",
+		"type": "process",
+		"command": "pwsh.exe",
+		"args": [
+			"-NoProfile",
+			"-File",
+			"${workspaceFolder}\\.vscode\\build.ps1",
+			"-Mode", "debug"
+		],
+		"options": {
+			"cwd": "${workspaceFolder}"
+		},
+		"group": "build",
+		"problemMatcher": "$msCompile"
 	}
 ]
 }

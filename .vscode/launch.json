@@ -18,6 +18,21 @@
             "stopAtEntry": false,
             "cwd": "${workspaceRoot}",
             "environment": []
+        },
+        {
+            "name": "logcommenter (inject sample.cpp) [debug]",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/build/windows-msvc-debug/logcommenter.exe",
+            "args": [
+                "--inject",
+                "--file", "${workspaceRoot}/src/sample.cpp",
+                "--var", "total",
+                "--compile-commands", "${workspaceRoot}/build/windows-msvc-debug/compile_commands.json"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}",
+            "environment": []
         }
     ]
 }

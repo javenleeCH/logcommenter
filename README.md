@@ -81,17 +81,23 @@ src/
 
 ```bash
 # Linux/macOS：一键脚本（自动 fetch 预编译 LLVM + build + test）
-./build.sh
+./build.sh            # Release（默认）
+./build.sh debug      # Debug：下载带 -g 的 Debug LLVM，可单步进入 LLVM/Clang 库内部
 
 # Windows：build.bat（windows-msvc，需在 vcvarsall/msvc-dev-cmd 环境，含 Git bash）
-build.bat
+build.bat             # Release
+build.bat debug       # Debug
 
-# 手动步骤（以 Linux 为例）：
+# 手动步骤（以 Linux、release 为例）：
 bash tools/fetch_llvm.sh                 # 下载并解压到 .toolchain
 cmake --preset unix-default \
   -DLLVM_DIR="$PWD/.toolchain/lib/cmake/llvm" \
   -DClang_DIR="$PWD/.toolchain/lib/cmake/clang"
 cmake --build build/unix-default --target logcommenter -j$(nproc)
+
+# 手动下载 Debug 版 LLVM（到 .toolchain-debug，含 -g 符号）
+bash tools/fetch_llvm.sh "" "" debug
+# 或 LOGC_LLVM_BUILD_TYPE=debug bash tools/fetch_llvm.sh
 
 # 本机已安装 LLVM 时，直接 export LLVM_DIR/Clang_DIR 即可，无需下载
 # 纯逻辑 core（无 Clang 依赖，快，必绿）：跳过 LLVM，只构建单测
@@ -110,20 +116,23 @@ LOGC_DISABLE_SSL=1 bash tools/fetch_llvm.sh
 | `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 LLVM/Clang）；OFF=仅纯逻辑 core |
 | `LLVM_DIR` / `Clang_DIR` | 指向预编译/本机 LLVM 的 CMake config（`lib/cmake/llvm`、`lib/cmake/clang`） |
 | `LOGC_DISABLE_SSL`（环境变量） | =1 时 fetch 脚本下载 asset 跳过 TLS 校验（代理/自签证书环境） |
+| `LOGC_LLVM_BUILD_TYPE`（环境变量） | `debug` 时 fetch 脚本下载 Debug 版 LLVM 到 `.toolchain-debug`（带 -g 符号） |
 
-> 预编译工具链由 `toolchain.yml` 手动构建一次（上传到 `toolchain-llvm-<ver>` release），CI / release 直接复用，避免重复编译 LLVM。
+> 预编译工具链由 `toolchain.yml` 手动构建（`build_type` 选 `release`/`debug`，各构建一次），
+> 上传到 `toolchain-llvm-<ver>` release asset，CI / release 只消费 **release** 版（门禁稳定）；
+> **debug** 版仅供本地步进调试 LLVM 内部，不会被门禁使用。
 
 ## 测试 / CI
 
 - **单测**（`logcommenter_tests`）：23 cases / 74 checks，覆盖格式表、TextEdit、偏移索引、CLI 参数。
 - **GitHub Actions**（`.github/workflows/ci.yml`）：
   - `core` job：纯逻辑，零 Clang 依赖，三平台（Ubuntu/Windows/macOS）快、必绿；
-  - `ast` job：下载预编译 LLVM 静态工具链 + `find_package` 构建 + E2E smoke——覆盖 comment / inject(var) / inject(position) / 注释/注入各自的多行与幂等语义，并包含"应用 TextEdit 后源码仍可解析 + 重复注入幂等"的落盘校验（`tools/e2e_apply_check.py`）。
-- **工具链构建**（`.github/workflows/toolchain.yml`，手动触发）：把静态 LLVM/Clang 构建安装并打包，上传到 `toolchain-llvm-<ver>` release asset，供 CI / release 复用。
+  - `ast` job：下载预编译 LLVM 静态工具链（release）+ `find_package` 构建 + E2E smoke——覆盖 comment / inject(var) / inject(position) / 注释/注入各自的多行与幂等语义，并包含"应用 TextEdit 后源码仍可解析 + 重复注入幂等"的落盘校验（`tools/e2e_apply_check.py`）。
+- **工具链构建**（`.github/workflows/toolchain.yml`，手动触发，`build_type` 可选 release/debug）：把静态 LLVM/Clang 构建安装并打包，上传到 `toolchain-llvm-<ver>` release asset。
 
 ## Release
 
-发布流程见 `.github/workflows/release.yml`：**Linux x64 / Windows x64** 下载预编译 LLVM 静态工具链、构建 logcommenter，产出带平台前缀的 zip 并附加到 release tag。`--inject --position` 等最新能力以 release 二进制为准。
+发布流程见 `.github/workflows/release.yml`：**Linux x64 / Windows x64** 下载预编译 LLVM（release）静态工具链、构建 logcommenter，产出带平台前缀的 zip 并附加到 release tag。`--inject --position` 等最新能力以 release 二进制为准。
 
 > macOS 暂不支持（现场编译 LLVM 冷编耗时过长），后续需要时可在 release.yml 补一行 matrix 加回。
 

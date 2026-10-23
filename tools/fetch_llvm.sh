@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # 下载预编译 LLVM/Clang 静态工具链 release asset 并解压到目标目录。
-# 用法: tools/fetch_llvm.sh [version] [dest_dir]
-# 产出: <dest_dir>/lib/cmake/{llvm,clang} 等，供 find_package 复用。
-# 环境变量:
-#   LOGC_LLVM_VERSION   默认 23.1.3
-#   LOGC_LLVM_DEST      默认 .toolchain
-#   LOGC_DISABLE_SSL    =1 时跳过 TLS 校验（代理/自签证书环境，等价 curl -k）
-#   GH_TOKEN / GITHUB_TOKEN  可选（私有仓库或提高限额时使用）
+# 用法: tools/fetch_llvm.sh [version] [dest_dir] [build_type]
+#   version    LLVM 版本，默认 23.1.3
+#   dest_dir   解压目录，默认 .toolchain（debug 时 .toolchain-debug）
+#   build_type release|debug，默认 release（debug 下 asset 带 -debug 后缀，含 -g 符号）
+# 环境变量: LOGC_LLVM_VERSION / LOGC_LLVM_DEST / LOGC_LLVM_BUILD_TYPE / LOGC_DISABLE_SSL / GH_TOKEN
+# 产出: <dest>/lib/cmake/{llvm,clang} 等，供 find_package 复用。
 set -euo pipefail
 
 VER="${1:-${LOGC_LLVM_VERSION:-23.1.3}}"
-DEST="${2:-${LOGC_LLVM_DEST:-.toolchain}}"
+BUILD="${3:-${LOGC_LLVM_BUILD_TYPE:-release}}"
+case "$BUILD" in
+  release) SUFFIX="" ;;
+  debug)   SUFFIX="-debug" ;;
+  *) echo "unknown build_type: $BUILD (use release|debug)" >&2; exit 1 ;;
+esac
+DEST="${2:-${LOGC_LLVM_DEST:-}}"
+if [ -z "$DEST" ]; then
+  [ "$BUILD" = "debug" ] && DEST=".toolchain-debug" || DEST=".toolchain"
+fi
 
 case "$(uname -s)" in
   Linux*)  PLAT=linux ;;
@@ -19,7 +27,7 @@ case "$(uname -s)" in
   *) echo "unsupported platform: $(uname -s)" >&2; exit 1 ;;
 esac
 
-ASSET="llvm-clang-${PLAT}-x86_64-${VER}.zip"
+ASSET="llvm-clang-${PLAT}-x86_64-${VER}${SUFFIX}.zip"
 TAG="toolchain-llvm-${VER}"
 URL="https://github.com/${GITHUB_REPOSITORY:-javenleeCH/logcommenter}/releases/download/${TAG}/${ASSET}"
 
@@ -31,7 +39,7 @@ fi
 
 TMP="$(mktemp -d)"
 ZIP="$TMP/$ASSET"
-echo "[fetch_llvm] downloading $ASSET ..."
+echo "[fetch_llvm] downloading $ASSET (build=$BUILD) ..."
 REPO="${GITHUB_REPOSITORY:-javenleeCH/logcommenter}"
 
 # 优先用 gh（GitHub runner 自带，自动处理 release asset 重定向与鉴权）；

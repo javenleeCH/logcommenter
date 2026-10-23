@@ -5,21 +5,22 @@
 ## 构建与测试
 
 - 完整构建（消费预编译 LLVM/Clang 23 静态工具链，不再从源码构建 LLVM）：
-  Linux/macOS：`./build.sh`（或 `bash tools/fetch_llvm.sh` 后 `cmake --preset unix-default -DLLVM_DIR=... -DClang_DIR=...`）；
-  Windows（MSVC，需 vcvarsall/msvc-dev-cmd 环境，含 Git bash）：`build.bat`。
-  预编译工具链下载到 `.toolchain/`（含 `lib/cmake/{llvm,clang}` config、静态库、头、clang 内置头）；
+  Linux/macOS：`./build.sh`（release，默认；`./build.sh debug` 用 Debug 版）；
+  Windows（MSVC，需 vcvarsall/msvc-dev-cmd 环境，含 Git bash）：`build.bat` / `build.bat debug`。
+  预编译工具链下载到 `.toolchain/`（release）或 `.toolchain-debug/`（debug，带 -g 符号）；
   本机已装 LLVM 时直接 export `LLVM_DIR`/`Clang_DIR` 跳过下载。
-- 预编译工具链由 `.github/workflows/toolchain.yml` **手动 dispatch** 构建（仅在 LLVM 版本变化时跑一次），
-  产物上传到 `toolchain-llvm-<ver>` release asset，CI/release 经 `tools/fetch_llvm.sh` 下载复用。
+- 预编译工具链由 `.github/workflows/toolchain.yml` **手动 dispatch** 构建（`build_type` 选
+  `release`/`debug`，仅在 LLVM 版本/构建类型变化时跑一次），产物上传到 `toolchain-llvm-<ver>`
+  release asset（release 无后缀，debug 带 `-debug` 后缀），CI/release 经 `tools/fetch_llvm.sh`
+  只下载 **release** 版复用。
+- Debug 版 LLVM 仅用于本地步进调试 LLVM 内部：`./build.sh debug` 会下载 `.toolchain-debug`
+  并以 `unix-default-debug` preset（`-DCMAKE_BUILD_TYPE=Debug`）编译，可单步进 clang::tooling
+  等库函数。门禁（CI/release）始终是 release 版 + Release 构建，不受影响。
 - 纯逻辑单测（改 `src/logengine/` 后必跑，无 Clang 依赖）：
   `cmake --build build/unix-default --target logcommenter_tests && ./build/unix-default/logcommenter_tests`
 - E2E 冒烟（与 CI `ast` job 的四场景一一对应，见 `.github/workflows/ci.yml`）：
   对 `src/sample.cpp` 跑 `--comment` / `--inject --var total` / `--inject --position 10:8` /
   `--inject --var cfg`，compile-commands 用 `build/unix-default/compile_commands.json`。
-- VSCode 插件薄壳（`vscode/`，TypeScript）：协议层（`src/protocol.ts`）不依赖 vscode，
-  单测 `cd vscode && npm test`（build + `node --test dist/test/protocol.test.js`，CI `plugin` job）；
-  `src/extension.ts` 仅做选区→CLI→applyEdit。字节列↔UTF-16 列换算在 `protocol.ts`，
-  改协议/换算必跑单测。改 TS 后 CI 会重新 tsc 编译。
 - 只改 `logengine`（纯逻辑）时用 `-DLOGCOMMENTER_BUILD_AST=OFF` 可跳过 LLVM。
 
 ## 产品与技术约束（源自 docs/PRODUCT_TECH_PLAN.md，改动不得违背）
@@ -27,24 +28,12 @@
 - 分层：VSCode 插件薄壳（选区/右键/applyEdit）→ 短生命周期 CLI（起→解析→返回→退出）
   → LogEngine。不 fork clangd、不常驻进程、不与 clangd 抢内存。
 - CLI 只输出 1-based JSON TextEdit、**不回写文件**；落地与否由调用方 applyEdit 决定。
-- compile_commands 用偏移索引（`.logc-idx`，**v2 格式**：首行 `#logc-idx-v2`，条目含
-  `d`/`dl` 即 directory 内容区间）seek+read 单条取参，绝不整载 1GB；索引按 mtime 失效，
-  旧版缓存加载直接返回 false 由调用方重建。
-- `readEntry` 兜底匹配：条目 `file` 为相对路径时，基准是该条目的 `directory` 字段
-  （拼接 + realpath，覆盖鸿蒙等 monorepo 的 `../../../...` + `/srv/workspace/...` 场景），
-  不是 cwd；`file` 为绝对路径时走原有 realpath 归一比较。
+- compile_commands 用偏移索引（`.logc-idx`）seek+read 单条取参，绝不整载 1GB；
+  索引按 mtime 失效。
 - 幂等（产品要求）：`--comment` 天然跳过已注释语句；`--inject` 不得重复注入——
   单次调用内已按 canonical decl 去重；跨调用检测已有 `[obs]` 行**尚未实现**，属产品待办。
-- 对象观测优先级（B 组已实现）：白名单基础类型 → `operator<<` 实查（TU 内可见
-  `std::ostream& << T` 重载，含模板参数）→ `--friend` 注入（仅用户显式确认：非模板、
-  有完整定义的 Record 类在 `}` 前插 inline friend operator<<，MVP 打印类型名+地址，
-  改类所在头文件有副作用）→ 地址兜底 `(const void*)&`。
-- `--friend` 产生跨文件 TextEdit：协议输出为数组 `[{file,edits},{file,edits}]`
-  （无跨文件 edit 时保持单对象格式向后兼容）；类在主文件时 file=--file 路径，
-  在头文件时用 SourceManager 解析路径。幂等：类内已有 `operator<<`（friend/成员）
-  不重复注入；观测行沿用 `[obs] var=` marker 探测不叠加。
-- operator<< 实查依赖 matcher 收集顺序（声明在目标变量之前才可见），漏判保守降级
-  到 friend/地址；ADL 重载在本 TU 不可见时同样降级——与 clangd 的可见声明决议一致。
+- 对象观测优先级：有 `operator<<` 直接流式；用户可改类走 friend 注入（需用户显式确认，
+  改头文件有副作用）；第三方/系统类型回退地址打印。
 - 方案文档中 "LLVM 21.1.4" 已过时：仓库现用 LLVM/Clang 23.1.3（预编译静态工具链，find_package 消费）。
 
 ## clang resource-dir（核心坑，曾造成连续十余次 CI 失败）
@@ -63,10 +52,13 @@
 
 ## CI / release 缓存策略（勿破坏）
 
-- LLVM 不再在 CI 现场编译：`toolchain.yml` 预编译成 release asset，ci/release 经 `fetch_llvm.sh` 下载复用。
-  没有 LLVM 源码构建，也就**不需要 ccache / LLVM 源码缓存**（项目自身源码很小，编译很快）。
-- `fetch_llvm.sh` 按平台选 asset（`llvm-clang-<plat>-x86_64-<ver>.zip`），已存在则跳过；
-  代理/自签证书环境用 `LOGC_DISABLE_SSL=1`（curl -k）。
+- LLVM 不再在 CI 现场编译：`toolchain.yml` 预编译成 release asset（release + debug 两版），
+  ci/release 经 `fetch_llvm.sh` 下载 **release** 版复用。没有 LLVM 源码构建，也就**不需要
+  ccache / LLVM 源码缓存**（项目自身源码很小，编译很快）。
+- `fetch_llvm.sh` 按平台+构建类型选 asset（`llvm-clang-<plat>-x86_64-<ver>[-debug].zip`），
+  已存在则跳过；代理/自签证书环境用 `LOGC_DISABLE_SSL=1`（curl -k）。
+- Debug 版 asset 体积较大（带 -g 符号，可能 >1GB/平台），只在本地需要步进调试时下载；
+  CI/release 一律用 release 版，勿引入 debug 到门禁。
 - ci.yml E2E 冒烟的行号（如 `--position 10:8`）与 `src/sample.cpp` 强耦合：
   改 sample.cpp 布局必须同步改 ci.yml 里的行号与注释。
 - release 打包从预编译工具链 `.toolchain/lib/clang/*/include` 复制资源头（含 tablegen 产物，完整）。
@@ -75,6 +67,9 @@
 
 - `LOGCOMMENTER_DEBUG=1`：打印 resource-dir 解析结果与内置头命中，并让 clang 打印 include
   搜索路径（`-v`）。
+- 想单步进入 LLVM/Clang 库内部：`./build.sh debug`（或手动下载 `.toolchain-debug` 并用
+  `unix-default-debug` / `windows-msvc-debug` preset 以 Debug 编译）。普通断点只在自己代码里时，
+  release 版即可。
 - compile_commands 索引缓存 `<db>.logc-idx` 按 mtime 失效；改了 compile_commands 后行为异常先删它。
 - `--inject --position` 模式同时挂 `varDecl` 与 `declRefExpr` 两个 matcher：命中哪个就按
   哪个自身的源码范围过滤位置，再按 canonical decl 去重。顺序不可反——先去重会让

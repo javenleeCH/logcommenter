@@ -14,7 +14,7 @@
       "name": "windows-msvc",
       "inherits": "base",
       "displayName": "Windows MSVC x64",
-      "description": "仅在 Windows 上生效，自动激活并使用 MSVC 编译器",
+      "description": "仅在 Windows 上生效，自动激活并使用 MSVC 编译器（Release）",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -33,10 +33,19 @@
       }
     },
     {
+      "name": "windows-msvc-debug",
+      "inherits": "windows-msvc",
+      "displayName": "Windows MSVC x64 (Debug)",
+      "description": "Debug 构建：链接 Debug 版 LLVM（.toolchain-debug），可单步进入 LLVM 内部；产物在 build/windows-msvc-debug/",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
       "name": "unix-default",
       "inherits": "base",
       "displayName": "Linux/macOS Default",
-      "description": "在 Linux 或 Mac 上使用系统默认的 GCC/Clang",
+      "description": "在 Linux 或 Mac 上使用系统默认的 GCC/Clang（Release）",
       "condition": {
         "type": "inList",
         "string": "${hostSystemName}",
@@ -44,6 +53,15 @@
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "unix-default-debug",
+      "inherits": "unix-default",
+      "displayName": "Linux/macOS Default (Debug)",
+      "description": "Debug 构建：链接 Debug 版 LLVM（.toolchain-debug），可单步进入 LLVM 内部；产物在 build/unix-default-debug/",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     }
   ]

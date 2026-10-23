@@ -1,3 +1,5 @@
+param([string]$Mode = "release")
+
 $ErrorActionPreference = "Stop"
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -26,5 +28,5 @@ if (-not (Test-Path $devShellModule)) {
 Import-Module $devShellModule
 Enter-VsDevShell $vsInstance.instanceId -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
 
-& (Join-Path $PSScriptRoot "..\build.bat")
+& (Join-Path $PSScriptRoot "..\build.bat") $Mode
 exit $LASTEXITCODE
