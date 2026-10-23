@@ -77,46 +77,53 @@ src/
 
 ## 构建
 
-依赖 **LLVM/Clang 23.1.3**。默认用 [CPM](https://github.com/cpm-cmake/CPM.cmake) 拉取 `llvm-project` 源码并现场静态编译（Linux / Windows 均可，CI 已全绿）。编译器和构建类型由 CMake preset 控制，无需手动指定。
+依赖 **LLVM/Clang 23.1.3**。预编译的静态 LLVM/Clang 工具链作为 release asset 提供（见 `toolchain.yml`），`tools/fetch_llvm.sh` 下载后用现代 CMake `find_package` 消费，**不再每次从源码编译 LLVM**。最简单的方式是直接跑构建脚本；也可手动按 preset 配置。
 
 ```bash
-# Linux/macOS：unix-default（系统默认 GCC/Clang，Ninja）
-cmake --preset unix-default
+# Linux/macOS：一键脚本（自动 fetch 预编译 LLVM + build + test）
+./build.sh
+
+# Windows：build.bat（windows-msvc，需在 vcvarsall/msvc-dev-cmd 环境，含 Git bash）
+build.bat
+
+# 手动步骤（以 Linux 为例）：
+bash tools/fetch_llvm.sh                 # 下载并解压到 .toolchain
+cmake --preset unix-default \
+  -DLLVM_DIR="$PWD/.toolchain/lib/cmake/llvm" \
+  -DClang_DIR="$PWD/.toolchain/lib/cmake/clang"
 cmake --build build/unix-default --target logcommenter -j$(nproc)
 
-# Windows：windows-msvc（MSVC x64，需在 vcvarsall/msvc-dev-cmd 环境）
-cmake --preset windows-msvc
-cmake --build build/windows-msvc --target logcommenter
-
+# 本机已安装 LLVM 时，直接 export LLVM_DIR/Clang_DIR 即可，无需下载
 # 纯逻辑 core（无 Clang 依赖，快，必绿）：跳过 LLVM，只构建单测
 cmake --preset unix-default -DLOGCOMMENTER_BUILD_AST=OFF
 cmake --build build/unix-default --target logcommenter_tests -j$(nproc)
 ./build/unix-default/logcommenter_tests
 
-# 代理 / 自签证书环境下拉不动 GitHub 时，可关闭依赖下载的 TLS 校验：
-cmake --preset unix-default -DLOGC_DISABLE_SSL=ON
+# 代理 / 自签证书环境下拉不动 release asset 时，让 fetch 脚本跳过 TLS 校验：
+LOGC_DISABLE_SSL=1 bash tools/fetch_llvm.sh
 ```
 
 构建选项：
 
 | 选项 | 说明 |
 |---|---|
-| `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 Clang）；OFF=仅纯逻辑 core |
-| `LOGC_DISABLE_SSL` | ON=下载依赖（llvm-project）时禁用 TLS 校验（代理/自签证书环境） |
-| `CMAKE_CXX_COMPILER_LAUNCHER=ccache` | 启用 ccache 编译缓存 |
+| `LOGCOMMENTER_BUILD_AST` | ON=构建 AST 引擎+CLI（需 LLVM/Clang）；OFF=仅纯逻辑 core |
+| `LLVM_DIR` / `Clang_DIR` | 指向预编译/本机 LLVM 的 CMake config（`lib/cmake/llvm`、`lib/cmake/clang`） |
+| `LOGC_DISABLE_SSL`（环境变量） | =1 时 fetch 脚本下载 asset 跳过 TLS 校验（代理/自签证书环境） |
 
-> 首次构建会完整编译 LLVM+Clang，耗时较长（CI 用 ccache + LLVM 源码缓存加速后续）。
+> 预编译工具链由 `toolchain.yml` 手动构建一次（上传到 `toolchain-llvm-<ver>` release），CI / release 直接复用，避免重复编译 LLVM。
 
 ## 测试 / CI
 
 - **单测**（`logcommenter_tests`）：23 cases / 74 checks，覆盖格式表、TextEdit、偏移索引、CLI 参数。
 - **GitHub Actions**（`.github/workflows/ci.yml`）：
-  - `core` job：纯逻辑，零 Clang 依赖，快、必绿；
-  - `ast` job：CPM 现场构建 LLVM 23 + ccache + E2E smoke——覆盖 comment / inject(var) / inject(position) / 注释/注入各自的多行与幂等语义，并包含"应用 TextEdit 后源码仍可解析 + 重复注入幂等"的落盘校验（`tools/e2e_apply_check.py`）。
+  - `core` job：纯逻辑，零 Clang 依赖，三平台（Ubuntu/Windows/macOS）快、必绿；
+  - `ast` job：下载预编译 LLVM 静态工具链 + `find_package` 构建 + E2E smoke——覆盖 comment / inject(var) / inject(position) / 注释/注入各自的多行与幂等语义，并包含"应用 TextEdit 后源码仍可解析 + 重复注入幂等"的落盘校验（`tools/e2e_apply_check.py`）。
+- **工具链构建**（`.github/workflows/toolchain.yml`，手动触发）：把静态 LLVM/Clang 构建安装并打包，上传到 `toolchain-llvm-<ver>` release asset，供 CI / release 复用。
 
 ## Release
 
-发布流程见 `.github/workflows/release.yml`：**Linux x64 / Windows x64** 现场编译 LLVM 静态链接，产出带平台前缀的 zip 并附加到 release tag。`--inject --position` 等最新能力以 release 二进制为准。
+发布流程见 `.github/workflows/release.yml`：**Linux x64 / Windows x64** 下载预编译 LLVM 静态工具链、构建 logcommenter，产出带平台前缀的 zip 并附加到 release tag。`--inject --position` 等最新能力以 release 二进制为准。
 
 > macOS 暂不支持（现场编译 LLVM 冷编耗时过长），后续需要时可在 release.yml 补一行 matrix 加回。
 
