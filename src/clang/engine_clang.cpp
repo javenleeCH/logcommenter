@@ -279,6 +279,7 @@ class Observer : public MatchFinder::MatchCallback {
         col_->friendInserts.push_back(
             {be, friendShiftText(RD->getNameAsString(), indent)});
         fmt.streamable = true;
+        fmt.expr = var;  // 与 operator<< 实查分支一致：观测行 << 表达式必须是变量
       }
     }
     std::string line;
