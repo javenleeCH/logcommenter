@@ -16,6 +16,9 @@
 - E2E 冒烟（与 CI `ast` job 的四场景一一对应，见 `.github/workflows/ci.yml`）：
   对 `src/sample.cpp` 跑 `--comment` / `--inject --var total` / `--inject --position 10:8` /
   `--inject --var cfg`，compile-commands 用 `build/unix-default/compile_commands.json`。
+- VSCode 插件薄壳（`vscode/`）：协议层（`protocol.js`）不依赖 vscode，
+  单测 `cd vscode && node --test`（CI `plugin` job）；`extension.js` 仅做
+  选区→CLI→applyEdit。字节列↔UTF-16 列换算在 `protocol.js`，改协议/换算必跑单测。
 - 只改 `logengine`（纯逻辑）时用 `-DLOGCOMMENTER_BUILD_AST=OFF` 可跳过 LLVM。
 
 ## 产品与技术约束（源自 docs/PRODUCT_TECH_PLAN.md，改动不得违背）

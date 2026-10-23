@@ -43,6 +43,21 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure
 
+  # VSCode 插件薄壳：协议层单测（node 内置 test runner，零依赖，秒级）
+  plugin:
+    name: plugin (vscode)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: |
+          node --check vscode/extension.js
+          node --check vscode/protocol.js
+      - name: Protocol unit tests
+        run: |
+          cd vscode
+          node --test
+
   # 完整工具（AST 引擎 + CLI）：下载预编译 LLVM/Clang 静态工具链 release asset（见
   # toolchain.yml / tools/fetch_llvm.sh），find_package 复用，不再从源码构建 LLVM。
   # Ubuntu 用系统工具链（unix-default），Windows 用 MSVC（windows-msvc）。

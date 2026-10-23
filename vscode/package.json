@@ -1,0 +1,68 @@
+{
+  "name": "logcommenter",
+  "displayName": "LogCommenter",
+  "description": "C++ 源码日志工具：右键一键注释日志 / 注入类型感知观测日志（基于 Clang/LibTooling，短生命周期 CLI）",
+  "version": "0.1.0",
+  "publisher": "javenleeCH",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "logcommenter.inject",
+        "title": "LogCommenter: 注入观测日志"
+      },
+      {
+        "command": "logcommenter.injectFriend",
+        "title": "LogCommenter: 注入观测日志（Friend 注入）"
+      },
+      {
+        "command": "logcommenter.comment",
+        "title": "LogCommenter: 注释日志"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "logcommenter.inject",
+          "group": "logcommenter@1",
+          "when": "editorLangId == cpp || editorLangId == c || editorLangId == cuda-cpp"
+        },
+        {
+          "command": "logcommenter.injectFriend",
+          "group": "logcommenter@2",
+          "when": "editorLangId == cpp || editorLangId == c || editorLangId == cuda-cpp"
+        },
+        {
+          "command": "logcommenter.comment",
+          "group": "logcommenter@3",
+          "when": "editorLangId == cpp || editorLangId == c || editorLangId == cuda-cpp"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "LogCommenter",
+      "properties": {
+        "logcommenter.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "logcommenter CLI 可执行文件绝对路径；留空时从 PATH 查找 logcommenter"
+        },
+        "logcommenter.compileCommands": {
+          "type": "string",
+          "default": "",
+          "description": "compile_commands.json 绝对路径；留空时自动从当前文件目录向上逐级探测（结果缓存）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check extension.js"
+  }
+}
