@@ -15,7 +15,7 @@ static void usage(const char *prog) {
       "\n"
       "用法:\n"
       "  %s --inject --file <path> --var <name> [--position line:col]\n"
-      "      --compile-commands <compile_commands.json>\n"
+      "      --compile-commands <compile_commands.json> [--friend]\n"
       "  %s --comment --file <path> --compile-commands <compile_commands.json>\n"
       "\n"
       "选项:\n"
@@ -23,6 +23,9 @@ static void usage(const char *prog) {
       "  --file PATH              待处理源文件\n"
       "  --var NAME               注入：要观测的变量名\n"
       "  --position LINE:COL      注入：光标位置（1-based，可选）\n"
+      "  --friend                 注入：对象不可 << 且类型为用户可改类时，注入\n"
+      "                            inline friend operator<<（改类所在头文件，\n"
+      "                            需用户显式确认），观测输出改为流式\n"
       "  --compile-commands PATH  compile_commands.json 路径\n"
       "  --help                   帮助\n",
       prog, prog);

@@ -31,8 +31,16 @@
   不是 cwd；`file` 为绝对路径时走原有 realpath 归一比较。
 - 幂等（产品要求）：`--comment` 天然跳过已注释语句；`--inject` 不得重复注入——
   单次调用内已按 canonical decl 去重；跨调用检测已有 `[obs]` 行**尚未实现**，属产品待办。
-- 对象观测优先级：有 `operator<<` 直接流式；用户可改类走 friend 注入（需用户显式确认，
-  改头文件有副作用）；第三方/系统类型回退地址打印。
+- 对象观测优先级（B 组已实现）：白名单基础类型 → `operator<<` 实查（TU 内可见
+  `std::ostream& << T` 重载，含模板参数）→ `--friend` 注入（仅用户显式确认：非模板、
+  有完整定义的 Record 类在 `}` 前插 inline friend operator<<，MVP 打印类型名+地址，
+  改类所在头文件有副作用）→ 地址兜底 `(const void*)&`。
+- `--friend` 产生跨文件 TextEdit：协议输出为数组 `[{file,edits},{file,edits}]`
+  （无跨文件 edit 时保持单对象格式向后兼容）；类在主文件时 file=--file 路径，
+  在头文件时用 SourceManager 解析路径。幂等：类内已有 `operator<<`（friend/成员）
+  不重复注入；观测行沿用 `[obs] var=` marker 探测不叠加。
+- operator<< 实查依赖 matcher 收集顺序（声明在目标变量之前才可见），漏判保守降级
+  到 friend/地址；ADL 重载在本 TU 不可见时同样降级——与 clangd 的可见声明决议一致。
 - 方案文档中 "LLVM 21.1.4" 已过时：仓库现用 LLVM/Clang 23.1.3（预编译静态工具链，find_package 消费）。
 
 ## clang resource-dir（核心坑，曾造成连续十余次 CI 失败）

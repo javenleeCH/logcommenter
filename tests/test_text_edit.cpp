@@ -28,3 +28,34 @@ TEST_CASE(edits_empty_array) {
   EXPECT_CONTAINS(j, "\"edits\": [");
   EXPECT_CONTAINS(j, "]");
 }
+
+TEST_CASE(edits_to_json_single_file_legacy_shape) {
+  // 无跨文件 edit：输出原单对象格式（向后兼容，E2E/插件不受影响）
+  TextEdit e;
+  e.start = {10, 5};
+  e.end = {10, 5};
+  e.text = "x();";
+  std::string j = editsToJson("a.cpp", {e});
+  EXPECT_CONTAINS(j, "{\n  \"file\": \"a.cpp\"");
+  EXPECT_FALSE(j.rfind("[", 0) == 0);  // 不是数组
+}
+
+TEST_CASE(edits_to_json_multi_file) {
+  // 跨文件（friend 注入）：输出按文件分组的数组，空 file 归入主文件
+  TextEdit main;
+  main.start = {11, 1};
+  main.end = {11, 1};
+  main.text = "obs;";
+  TextEdit hdr;
+  hdr.start = {5, 3};
+  hdr.end = {5, 3};
+  hdr.text = "friend ...;";
+  hdr.file = "widget.h";
+  std::string j = editsToJson("a.cpp", {main, hdr});
+  // 数组开头 + 两个文件组 + 顺序保持
+  EXPECT_TRUE(j.rfind("[", 0) == 0);
+  EXPECT_CONTAINS(j, "\"file\": \"a.cpp\"");
+  EXPECT_CONTAINS(j, "\"file\": \"widget.h\"");
+  EXPECT_TRUE(j.find("\"file\": \"a.cpp\"") < j.find("\"file\": \"widget.h\""));
+  EXPECT_CONTAINS(j, "friend ...;");
+}

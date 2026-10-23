@@ -14,6 +14,8 @@ struct CliArgs {
   int line = -1;         // inject/comment 用：选中行（1-based）
   int col = -1;          // inject 用：选中列（1-based）
   std::string compileJson;  // compile_commands.json 路径
+  bool friend_ = false;     // inject 用：对象不可流式时注入 inline friend operator<<
+                            // （改类所在头文件，需用户显式确认）
   bool help = false;
   std::string error;     // 非空表示解析失败
 };

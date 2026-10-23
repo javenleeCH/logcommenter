@@ -88,9 +88,12 @@ bool textHasMarker(const char *data, const std::string &marker) {
   return false;
 }
 
-// 收集插入点（SourceLocation + 文本），文件处理结束后统一转 TextEdit
+// 收集插入点（SourceLocation + 文本），文件处理结束后统一转 TextEdit。
+// inserts   —— 主文件（--file）内的观测日志插入
+// friendInserts —— 跨文件（类所在头文件）的 friend operator<< 注入
 struct Collector {
   std::vector<std::pair<SourceLocation, std::string>> inserts;
+  std::vector<std::pair<SourceLocation, std::string>> friendInserts;
 };
 
 class Observer : public MatchFinder::MatchCallback {
@@ -98,6 +101,11 @@ class Observer : public MatchFinder::MatchCallback {
   Observer(const CliArgs &args, Collector *c) : args_(args), col_(c) {}
 
   void run(const MatchFinder::MatchResult &res) override {
+    // 预收集：inject 模式下先收 TU 内可见的全部 operator<< 声明，供类型实查
+    if (const auto *FD = res.Nodes.getNodeAs<FunctionDecl>("op_shift")) {
+      shiftOps_.push_back(FD);
+      return;
+    }
     if (args_.action == Action::kComment) {
       handleComment(res);
     } else if (args_.action == Action::kInject) {
@@ -110,9 +118,66 @@ class Observer : public MatchFinder::MatchCallback {
   Collector *col_;
   std::set<const VarDecl *> seen_;  // 已注入变量（canonical decl），position 模式去重
   std::set<unsigned> commentedLines_;  // 已注释行号（同一行多条日志只插一份 "// "）
+  std::vector<const FunctionDecl *> shiftOps_;  // TU 内可见的 operator<< 声明
 
   bool isTarget(const StringLiteral *Str) const {
     return Str->getString().find("pengtest") != StringRef::npos;
+  }
+
+  // 判定类型是否是可流式输出目标（operator<< 实查）：遍历 TU 内可见的
+  // operator<< 自由函数，要求第一参数是 std::ostream 系、第二参数与本变量
+  // 类型兼容（const T&/T 或模板参数）。ADL 重载若在本 TU 不可见则探测不到，
+  // 保守降级为不可流式（与 clangd 行为近似：在可见声明范围内决议）。
+  static bool isOStreamType(const ASTContext &Ctx, QualType t) {
+    t = t.getNonReferenceType().getUnqualifiedType();
+    const auto *RT = t->getAs<RecordType>();
+    if (!RT) return false;
+    std::string n = RT->getDecl()->getNameAsString();
+    // std::ostream 是 std::basic_ostream<char, char_traits<char>> 的别名
+    return n == "basic_ostream" || n == "ostream";
+  }
+
+  bool isStreamableViaOperator(const ASTContext &Ctx,
+                               QualType varType) const {
+    QualType vt = varType.getNonReferenceType().getUnqualifiedType();
+    for (const FunctionDecl *FD : shiftOps_) {
+      if (FD->getNumParams() < 2) continue;
+      if (!isOStreamType(Ctx, FD->getParamDecl(0)->getType())) continue;
+      QualType p1 =
+          FD->getParamDecl(1)->getType().getNonReferenceType().getUnqualifiedType();
+      // 模板参数（template<typename T>）接受任意类型
+      if (p1->isTemplateTypeParmType() || p1->isDependentType()) return true;
+      if (Ctx.hasSameType(p1, vt)) return true;
+      // 跨 typedef / 命名空间拼写的字符串近似（保守：只在核心类型名相同时命中）
+      if (simplifyType(p1.getAsString()) == simplifyType(vt.getAsString()))
+        return true;
+    }
+    return false;
+  }
+
+  // 类内是否已有 operator<<（friend 声明或成员）。幂等：已注入过 friend 就不再注入。
+  static bool recordHasStreamOperator(const RecordDecl *RD) {
+    for (const Decl *D : RD->decls()) {
+      if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+        if (FD->getDeclName().getAsString() == "operator<<") return true;
+      }
+      if (const auto *Fr = dyn_cast<FriendDecl>(D)) {
+        if (const NamedDecl *ND = Fr->getFriendDecl())
+          if (ND->getDeclName().getAsString() == "operator<<") return true;
+      }
+    }
+    return false;
+  }
+
+  // 生成 inline friend operator<< 定义（MVP：打印类型名 + 对象地址）。
+  // 类名取自定义处；非模板、有完整定义的 Record 才支持。
+  static std::string friendShiftText(const std::string &tname,
+                                     const std::string &indent) {
+    std::string in = indent + "  ";
+    return "\n" + indent + "  friend std::ostream& operator<<(std::ostream& _os, const " +
+           tname + "& _v) {\n" + in + "    _os << \"(" + tname +
+           "@\" << static_cast<const void*>(&_v) << \")\";\n" + in +
+           "    return _os;\n" + indent + "  }\n" + indent;
   }
 
   // ---- --comment ----
@@ -191,6 +256,31 @@ class Observer : public MatchFinder::MatchCallback {
     std::string type = VD->getType().getAsString();
     std::string var = VD->getNameAsString();
     ObsFormat fmt = formatForType(type, var);
+    // operator<< 实查：白名单未覆盖的自定义类型，只要 TU 内可见存在可用重载
+    // （std::ostream& << T / 模板 <<），同样可直接流式打印，避免误走地址兜底。
+    if (!fmt.streamable &&
+        isStreamableViaOperator(*res.Context, VD->getType())) {
+      fmt.streamable = true;
+      fmt.expr = var;
+    }
+    // friend 注入（需用户显式 --friend）：对象不可流式且类型为用户可改的
+    // 非模板类（有完整定义）时，在类 '}' 前注入 inline friend operator<<，
+    // 观测表达式改为流式。改的是类所在头文件（跨文件 TextEdit），有副作用，
+    // 故必须显式确认。类内已有 operator<<（friend 或成员）时跳过（幂等）。
+    if (!fmt.streamable && args_.friend_) {
+      QualType qt = VD->getType().getNonReferenceType().getUnqualifiedType();
+      const auto *RT = qt->getAs<RecordType>();
+      const RecordDecl *RD = RT ? RT->getDecl()->getDefinition() : nullptr;
+      if (RD && RD->getBraceRange().isValid() && RD->getIdentifier() &&
+          !RD->isTemplated() && !recordHasStreamOperator(RD)) {
+        SourceLocation be = RD->getBraceRange().getEnd();
+        SourceManager &SM = res.Context->getSourceManager();
+        std::string indent = lineIndentAt(SM, be);
+        col_->friendInserts.push_back(
+            {be, friendShiftText(RD->getNameAsString(), indent)});
+        fmt.streamable = true;
+      }
+    }
     std::string line;
     std::string marker;  // 已注入幂等标记（见 alreadyObserved）
     if (fmt.streamable) {
@@ -328,6 +418,11 @@ class EngineConsumer : public ASTConsumer {
               .bind("log_stream"),
           &observer_);
     } else if (args_.action == Action::kInject) {
+      // 预收集 TU 内可见的 operator<< 声明（inject 类型实查用）。
+      // 收集回调在 run() 中先于 handleInject 处理（见 Observer::run）。
+      mf_->addMatcher(
+          functionDecl(hasOverloadedOperatorName("<<")).bind("op_shift"),
+          &observer_);
       if (!args_.var.empty()) {
         // 按变量名：只匹配同名声明
         mf_->addMatcher(varDecl(hasName(args_.var)).bind("target_var"),
@@ -368,6 +463,24 @@ class EngineAction : public ASTFrontendAction {
       e.start.col = SM.getSpellingColumnNumber(p.first);
       e.end = e.start;
       e.text = p.second;
+      edits_->push_back(e);
+    }
+    // friend 注入：目标在类所在文件（通常为头文件，跨文件 TextEdit）。
+    // 类定义在主文件（--file）时用 --file 路径，否则用 SourceManager 解析
+    // 出的头文件路径。
+    for (auto &p : col_.friendInserts) {
+      FileID fid = SM.getFileID(p.first);
+      TextEdit e;
+      e.start.line = SM.getSpellingLineNumber(p.first);
+      e.start.col = SM.getSpellingColumnNumber(p.first);
+      e.end = e.start;
+      e.text = p.second;
+      if (fid == SM.getMainFileID()) {
+        e.file = args_.file;
+      } else {
+        std::string f = SM.getFilename(p.first).str();
+        e.file = f.empty() ? args_.file : f;
+      }
       edits_->push_back(e);
     }
     // 整行模式（产品方案 §3.4：选中整行插入该行前）：--position 未落在任何

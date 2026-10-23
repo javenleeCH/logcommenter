@@ -26,6 +26,16 @@ TEST_CASE(args_inject_full) {
   EXPECT_EQ(a.line, 42);
   EXPECT_EQ(a.col, 17);
   EXPECT_EQ_STR(a.compileJson, "cc.json");
+  EXPECT_FALSE(a.friend_);
+}
+
+TEST_CASE(args_inject_friend) {
+  std::vector<const char *> v = {"prog", "--inject", "--file", "a.cpp",
+                                 "--var", "w", "--friend",
+                                 "--compile-commands", "cc.json"};
+  auto a = parseVec(v);
+  EXPECT_TRUE(a.error.empty());
+  EXPECT_TRUE(a.friend_);
 }
 
 TEST_CASE(args_comment) {

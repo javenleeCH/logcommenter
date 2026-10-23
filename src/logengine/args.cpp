@@ -72,6 +72,8 @@ CliArgs parseArgs(int argc, const char **argv) {
         a.error = "--compile-commands requires a path";
         return a;
       }
+    } else if (arg == "--friend") {
+      a.friend_ = true;
     } else if (arg == "--help" || arg == "-h") {
       a.help = true;
     } else {
