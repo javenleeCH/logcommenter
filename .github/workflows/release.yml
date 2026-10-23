@@ -106,8 +106,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+          TAG="${{ steps.tag.outputs.tag }}"
+          # 推送 tag 不会自动创建 GitHub Release；不存在则先创建（自动生成变更说明）
+          if ! gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "${{ github.repository }}" --title "$TAG" --generate-notes
+          fi
           for f in dist/*/*; do
             [ -f "$f" ] || continue
             echo "== upload $f =="
-            gh release upload "${{ steps.tag.outputs.tag }}" "$f" -R "${{ github.repository }}" --clobber
+            gh release upload "$TAG" "$f" -R "${{ github.repository }}" --clobber
           done
