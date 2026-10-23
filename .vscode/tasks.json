@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+	{
+		"label": "Build (Windows MSVC)",
+		"type": "process",
+		"command": "pwsh.exe",
+		"args": [
+			"-NoProfile",
+			"-File",
+			"${workspaceFolder}\\.vscode\\build.ps1"
+		],
+		"options": {
+			"cwd": "${workspaceFolder}"
+		},
+		"group": {
+			"kind": "build",
+			"isDefault": true
+		},
+		"problemMatcher": "$msCompile"
+	}
+]
+}
