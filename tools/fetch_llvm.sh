@@ -29,19 +29,32 @@ if [ -f "$DEST/lib/cmake/llvm/LLVMConfig.cmake" ]; then
   exit 0
 fi
 
-# 单一 SSL 开关：LOGC_DISABLE_SSL=1 时跳过证书校验
-INSECURE=()
-if [ "${LOGC_DISABLE_SSL:-0}" = "1" ]; then INSECURE=(-k); fi
-
 TMP="$(mktemp -d)"
 ZIP="$TMP/$ASSET"
 echo "[fetch_llvm] downloading $ASSET ..."
-if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
-  AUTH=(-H "Authorization: Bearer ${GH_TOKEN:-${GITHUB_TOKEN}}")
+REPO="${GITHUB_REPOSITORY:-javenleeCH/logcommenter}"
+
+# 优先用 gh（GitHub runner 自带，自动处理 release asset 重定向与鉴权）；
+# 否则 curl，并对所有错误（含连接重置）重试。
+if command -v gh >/dev/null 2>&1 && [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+  (cd "$TMP" && gh release download "$TAG" --repo "$REPO" --pattern "$ASSET" --clobber)
 else
-  AUTH=()
+  # 单一 SSL 开关：LOGC_DISABLE_SSL=1 时跳过证书校验
+  INSECURE=()
+  if [ "${LOGC_DISABLE_SSL:-0}" = "1" ]; then INSECURE=(-k); fi
+  if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+    AUTH=(-H "Authorization: Bearer ${GH_TOKEN:-${GITHUB_TOKEN}}")
+  else
+    AUTH=()
+  fi
+  curl -fL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 \
+    "${INSECURE[@]}" "${AUTH[@]}" "$URL" -o "$ZIP"
 fi
-curl -fL --retry 3 "${INSECURE[@]}" "${AUTH[@]}" "$URL" -o "$ZIP"
+
+# 统一找到下载好的 zip（gh 下载到 TMP，curl 直接写 ZIP）
+[ -f "$ZIP" ] || ZIP="$(find "$TMP" -name '*.zip' -print -quit)"
+[ -n "$ZIP" ] && [ -f "$ZIP" ] || { echo "[fetch_llvm] download failed: $ASSET" >&2; exit 1; }
+echo "[fetch_llvm] downloaded $(du -h "$ZIP" | cut -f1)"
 
 # Windows 上 unzip 可能不可用，优先 unzip，回退 PowerShell
 if command -v unzip >/dev/null 2>&1; then
