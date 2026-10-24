@@ -4,11 +4,12 @@
 # CI/发布门禁只用 release）。CI/release 工作流下载 asset 后 find_package 复用。
 # 只在手动触发时运行（LLVM 版本 + 构建类型各构建一次即可）。
 #
-# 体积策略（GitHub release asset 单文件上限 2 GiB）：
-#   - release：只打包安装树（静态库 + 头 + config + clang 内置头）
-#   - debug  ：安装树单独一个 asset；完整 LLVM 源码树独立成另一份 asset
-#              （llvm-clang-<ver>-src.zip，两平台共用同一份，供调试器源码映射）
-#   - Linux debug 用 -g1（行号表）加速冷编 + 缩小体积，源码映射/步进到行不受影响
+# 体积/耗时策略（GitHub release asset 单文件上限 2 GiB，免费 runner job 6h 上限）：
+#   - release：全量构建，打包安装树（静态库 + 头 + config + clang 内置头）
+#   - debug  ：只构建 logcommenter 实际链接的 clang 库（clangTooling 链）+ X86 target
+#              组件 + clang 内置头，不做全量编译 → 体积与耗时都大幅下降；
+#              Linux debug 用 -g1（行号表）再降一档；完整 LLVM 源码树独立成一份 asset
+#              （llvm-clang-<ver>-src.zip，两平台共用，供调试器源码映射）
 name: toolchain
 
 permissions:
@@ -120,8 +121,29 @@ jobs:
       - name: Build & install
         shell: bash
         run: |
-          cmake --build llvm-build --parallel $( [ "$RUNNER_OS" = Windows ] && echo 4 || nproc )
-          cmake --install llvm-build
+          PAR=$( [ "$RUNNER_OS" = Windows ] && echo 4 || nproc )
+          BT="${{ github.event.inputs.build_type }}"
+          if [ "$BT" = "debug" ]; then
+            # debug：只构建 logcommenter 实际链接的 clang 库（clangTooling 链）
+            # + X86 target 组件 + clang 内置头，依赖链自动传递。
+            # 不做全量编译 → 库 asset 体积与冷编耗时都大幅下降，避开 2GiB/6h 限制。
+            cmake --build llvm-build --parallel "$PAR" --target \
+              clangTooling clangASTMatchers clangRewrite clangFrontend \
+              clangSerialization clangAST clangBasic clangLex clang-resource-headers \
+              LLVMX86Info LLVMX86Desc LLVMX86CodeGen LLVMX86AsmParser \
+              LLVMX86Disassembler LLVMX86Utils
+            # 手工安装需要部分（cmake --install 会因未构建的库缺失而报错，故不用它）：
+            mkdir -p toolchain-install/lib toolchain-install/include
+            cp -r llvm-build/lib/cmake toolchain-install/lib/
+            cp -r llvm-project/llvm/include/. toolchain-install/include/
+            cp -r llvm-project/clang/include/. toolchain-install/include/
+            cp -r llvm-build/include/. toolchain-install/include/ 2>/dev/null || true
+            cp llvm-build/lib/*.a toolchain-install/lib/ 2>/dev/null || true
+            cp -r llvm-build/lib/clang toolchain-install/lib/ 2>/dev/null || true
+          else
+            cmake --build llvm-build --parallel "$PAR"
+            cmake --install llvm-build
+          fi
 
       - name: Show ccache stats
         shell: bash
