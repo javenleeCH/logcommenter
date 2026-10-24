@@ -127,11 +127,12 @@ jobs:
             # debug：只构建 logcommenter 实际链接的 clang 库（clangTooling 链）
             # + X86 target 组件 + clang 内置头，依赖链自动传递。
             # 不做全量编译 → 库 asset 体积与冷编耗时都大幅下降，避开 2GiB/6h 限制。
+            # X86 组件 target（LLVM 23 实测命名）：Info/Desc/CodeGen/AsmParser/Disassembler
             cmake --build llvm-build --parallel "$PAR" --target \
               clangTooling clangASTMatchers clangRewrite clangFrontend \
               clangSerialization clangAST clangBasic clangLex clang-resource-headers \
               LLVMX86Info LLVMX86Desc LLVMX86CodeGen LLVMX86AsmParser \
-              LLVMX86Disassembler LLVMX86Utils
+              LLVMX86Disassembler
             # 手工安装需要部分（cmake --install 会因未构建的库缺失而报错，故不用它）：
             mkdir -p toolchain-install/lib toolchain-install/include
             cp -r llvm-build/lib/cmake toolchain-install/lib/
