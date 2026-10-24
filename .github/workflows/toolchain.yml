@@ -170,6 +170,8 @@ jobs:
         run: |
           VER="${{ github.event.inputs.llvm_version }}"
           BT="${{ github.event.inputs.build_type }}"
+          # Windows 用 PowerShell Compress-Archive（runner 无 zip 命令）；
+          # Linux/macOS 用 zip。
           if [ "$BT" = "debug" ]; then
             # debug：安装树拆成 libs / headers 两个 asset（各 < 2GiB），源码独立 src asset
             LIBS_ASSET="llvm-clang-${{ matrix.plat }}-x86_64-${VER}-debug-libs.zip"
@@ -185,13 +187,18 @@ jobs:
             else
               cp toolchain-install/lib/*.a pkg-libs/lib/ 2>/dev/null || true
             fi
-            (cd pkg-libs && zip -rq "../$LIBS_ASSET" .)
-            echo "libs asset: $(du -h "$LIBS_ASSET" | cut -f1)"
             # headers：include + clang 内置头
             mkdir -p pkg-hdrs/include pkg-hdrs/lib
             cp -r toolchain-install/include/. pkg-hdrs/include/
             cp -r toolchain-install/lib/clang pkg-hdrs/lib/ 2>/dev/null || true
-            (cd pkg-hdrs && zip -rq "../$HDRS_ASSET" .)
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              powershell -Command 'Set-Location pkg-libs; Compress-Archive -Path * -DestinationPath ..\'"$LIBS_ASSET"' -Force'
+              powershell -Command 'Set-Location pkg-hdrs; Compress-Archive -Path * -DestinationPath ..\'"$HDRS_ASSET"' -Force'
+            else
+              (cd pkg-libs && zip -rq "../$LIBS_ASSET" .)
+              (cd pkg-hdrs && zip -rq "../$HDRS_ASSET" .)
+            fi
+            echo "libs asset: $(du -h "$LIBS_ASSET" | cut -f1)"
             echo "headers asset: $(du -h "$HDRS_ASSET" | cut -f1)"
             # 源码树独立 asset（两平台共用，只由 Linux job 打包/上传一次）
             if [ "$RUNNER_OS" != "Windows" ]; then
