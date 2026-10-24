@@ -5,11 +5,12 @@
 # 只在手动触发时运行（LLVM 版本 + 构建类型各构建一次即可）。
 #
 # 体积/耗时策略（GitHub release asset 单文件上限 2 GiB，免费 runner job 6h 上限）：
-#   - release：全量构建，打包安装树（静态库 + 头 + config + clang 内置头）
+#   - release：全量构建，单 asset 打包安装树（静态库 + 头 + config + clang 内置头）
 #   - debug  ：只构建 logcommenter 实际链接的 clang 库（clangTooling 链）+ X86 target
-#              组件 + clang 内置头，不做全量编译 → 体积与耗时都大幅下降；
-#              Linux debug 用 -g1（行号表）再降一档；完整 LLVM 源码树独立成一份 asset
-#              （llvm-clang-<ver>-src.zip，两平台共用，供调试器源码映射）
+#              组件 + clang 内置头，不做全量编译；安装树拆成 libs / headers 两个 asset
+#              （各 < 2GiB），完整 LLVM 源码树独立成 src asset（两平台共用，供源码映射）；
+#              Linux debug 用 -g1（行号表）再降一档；Linux 只保留 X86 Info/Desc
+#              （AST 分析不做后端 CodeGen），Windows 保留完整 X86（/Zi PDB 独立，体积小）
 name: toolchain
 
 permissions:
@@ -97,8 +98,7 @@ jobs:
         run: |
           EXTRA=""
           if [ "${{ github.event.inputs.build_type }}" = "debug" ] && [ "$RUNNER_OS" != "Windows" ]; then
-            # Linux Debug：-g1（行号表）已足够"源码映射 + 步进到源码行"，
-            # 显著减小符号体积与冷编耗时（Windows 用 MSVC Debug 默认 /Zi 完整 PDB）
+            # Linux Debug：-g1（行号表）已足够"源码映射 + 步进到源码行"，显著减小体积/耗时
             EXTRA="-DCMAKE_CXX_FLAGS=-g1 -DCMAKE_C_FLAGS=-g1"
           fi
           cmake -G Ninja -S llvm-project/llvm -B llvm-build \
@@ -124,22 +124,30 @@ jobs:
           PAR=$( [ "$RUNNER_OS" = Windows ] && echo 4 || nproc )
           BT="${{ github.event.inputs.build_type }}"
           if [ "$BT" = "debug" ]; then
-            # debug：只构建 logcommenter 实际链接的 clang 库（clangTooling 链）
-            # + X86 target 组件 + clang 内置头，依赖链自动传递。
-            # 不做全量编译 → 库 asset 体积与冷编耗时都大幅下降，避开 2GiB/6h 限制。
-            # X86 组件 target（LLVM 23 实测命名）：Info/Desc/CodeGen/AsmParser/Disassembler
+            # debug：只构建 logcommenter 实际链接的 clang 库（clangTooling 链）+ X86 target
+            # 组件 + clang 内置头，依赖链自动传递，不做全量编译。
+            # X86 组件：Linux 只留 Info/Desc（AST 分析不做后端 CodeGen）；
+            # Windows 保留完整 X86（/Zi PDB 独立，体积不受影响，避免潜在链接缺口）。
+            TGT_X86="LLVMX86Info LLVMX86Desc"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              TGT_X86="LLVMX86Info LLVMX86Desc LLVMX86CodeGen LLVMX86AsmParser LLVMX86Disassembler"
+            fi
             cmake --build llvm-build --parallel "$PAR" --target \
               clangTooling clangASTMatchers clangRewrite clangFrontend \
               clangSerialization clangAST clangBasic clangLex clang-resource-headers \
-              LLVMX86Info LLVMX86Desc LLVMX86CodeGen LLVMX86AsmParser \
-              LLVMX86Disassembler
-            # 手工安装需要部分（cmake --install 会因未构建的库缺失而报错，故不用它）：
+              $TGT_X86
+            # 手工安装需要部分（cmake --install 会因未构建的库缺失而报错，故不用它）
             mkdir -p toolchain-install/lib toolchain-install/include
             cp -r llvm-build/lib/cmake toolchain-install/lib/
             cp -r llvm-project/llvm/include/. toolchain-install/include/
             cp -r llvm-project/clang/include/. toolchain-install/include/
             cp -r llvm-build/include/. toolchain-install/include/ 2>/dev/null || true
-            cp llvm-build/lib/*.a toolchain-install/lib/ 2>/dev/null || true
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              cp llvm-build/lib/*.lib toolchain-install/lib/ 2>/dev/null || true
+              cp llvm-build/lib/*.pdb toolchain-install/lib/ 2>/dev/null || true
+            else
+              cp llvm-build/lib/*.a toolchain-install/lib/ 2>/dev/null || true
+            fi
             cp -r llvm-build/lib/clang toolchain-install/lib/ 2>/dev/null || true
           else
             cmake --build llvm-build --parallel "$PAR"
@@ -157,27 +165,51 @@ jobs:
           path: ${{ github.workspace }}/.ccache
           key: toolchain-${{ matrix.plat }}-${{ github.event.inputs.build_type }}-llvm-${{ github.event.inputs.llvm_version }}
 
-      - name: Package installed tree
+      - name: Package assets
         shell: bash
         run: |
           VER="${{ github.event.inputs.llvm_version }}"
-          ASSET="llvm-clang-${{ matrix.plat }}-x86_64-${VER}${{ steps.bt.outputs.suffix }}.zip"
-          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
-          # debug：LLVM 源码树独立成一份 asset（两平台共用，供调试器源码映射）。
-          # 只由 Linux job 打包/上传一次，避免两个平台重复上传同名文件。
-          if [ "${{ github.event.inputs.build_type }}" = "debug" ] && [ "$RUNNER_OS" != "Windows" ]; then
-            SRC_ASSET="llvm-clang-${VER}-src.zip"
-            echo "SRC_ASSET=$SRC_ASSET" >> "$GITHUB_ENV"
-            (cd llvm-project && zip -qr "../$SRC_ASSET" .)
-            echo "packaged source tree: $(du -h "$SRC_ASSET" | cut -f1)"
-          fi
-          # 只打包安装树（含 lib/cmake/{llvm,clang} config、静态库、头、clang 内置头）
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            powershell -Command 'Set-Location toolchain-install; Compress-Archive -Path * -DestinationPath ..\'"$ASSET"' -Force'
+          BT="${{ github.event.inputs.build_type }}"
+          if [ "$BT" = "debug" ]; then
+            # debug：安装树拆成 libs / headers 两个 asset（各 < 2GiB），源码独立 src asset
+            LIBS_ASSET="llvm-clang-${{ matrix.plat }}-x86_64-${VER}-debug-libs.zip"
+            HDRS_ASSET="llvm-clang-${{ matrix.plat }}-x86_64-${VER}-debug-headers.zip"
+            echo "LIBS_ASSET=$LIBS_ASSET" >> "$GITHUB_ENV"
+            echo "HDRS_ASSET=$HDRS_ASSET" >> "$GITHUB_ENV"
+            # libs：库 + cmake config
+            mkdir -p pkg-libs/lib
+            cp -r toolchain-install/lib/cmake pkg-libs/lib/
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              cp toolchain-install/lib/*.lib pkg-libs/lib/ 2>/dev/null || true
+              cp toolchain-install/lib/*.pdb pkg-libs/lib/ 2>/dev/null || true
+            else
+              cp toolchain-install/lib/*.a pkg-libs/lib/ 2>/dev/null || true
+            fi
+            (cd pkg-libs && zip -rq "../$LIBS_ASSET" .)
+            echo "libs asset: $(du -h "$LIBS_ASSET" | cut -f1)"
+            # headers：include + clang 内置头
+            mkdir -p pkg-hdrs/include pkg-hdrs/lib
+            cp -r toolchain-install/include/. pkg-hdrs/include/
+            cp -r toolchain-install/lib/clang pkg-hdrs/lib/ 2>/dev/null || true
+            (cd pkg-hdrs && zip -rq "../$HDRS_ASSET" .)
+            echo "headers asset: $(du -h "$HDRS_ASSET" | cut -f1)"
+            # 源码树独立 asset（两平台共用，只由 Linux job 打包/上传一次）
+            if [ "$RUNNER_OS" != "Windows" ]; then
+              SRC_ASSET="llvm-clang-${VER}-src.zip"
+              echo "SRC_ASSET=$SRC_ASSET" >> "$GITHUB_ENV"
+              (cd llvm-project && zip -rq "../$SRC_ASSET" .)
+              echo "src asset: $(du -h "$SRC_ASSET" | cut -f1)"
+            fi
           else
-            (cd toolchain-install && zip -r "../$ASSET" .)
+            ASSET="llvm-clang-${{ matrix.plat }}-x86_64-${VER}.zip"
+            echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              powershell -Command 'Set-Location toolchain-install; Compress-Archive -Path * -DestinationPath ..\'"$ASSET"' -Force'
+            else
+              (cd toolchain-install && zip -r "../$ASSET" .)
+            fi
+            echo "release asset: $(du -h "$ASSET" | cut -f1)"
           fi
-          echo "packaged install tree: $(du -h "$ASSET" | cut -f1)"
 
       - name: Upload to toolchain release
         shell: bash
@@ -193,7 +225,12 @@ jobs:
               --title "Prebuilt LLVM/Clang ${VER} (static, x86_64)" \
               --notes "Static LLVM/Clang consumed via find_package. Do not delete; CI downloads these assets."
           fi
-          gh release upload "$TAG" "${{ env.ASSET }}" -R "${{ github.repository }}" --clobber
-          if [ -n "${{ env.SRC_ASSET }}" ]; then
-            gh release upload "$TAG" "${{ env.SRC_ASSET }}" -R "${{ github.repository }}" --clobber
+          if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
+            gh release upload "$TAG" "${{ env.LIBS_ASSET }}" -R "${{ github.repository }}" --clobber
+            gh release upload "$TAG" "${{ env.HDRS_ASSET }}" -R "${{ github.repository }}" --clobber
+            if [ -n "${{ env.SRC_ASSET }}" ]; then
+              gh release upload "$TAG" "${{ env.SRC_ASSET }}" -R "${{ github.repository }}" --clobber
+            fi
+          else
+            gh release upload "$TAG" "${{ env.ASSET }}" -R "${{ github.repository }}" --clobber
           fi
