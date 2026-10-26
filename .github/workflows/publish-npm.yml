@@ -95,14 +95,22 @@ jobs:
       # GitHub Packages 只接受 @owner/ 作用域包名，unscoped PUT 一律 E404；
       # 且 npm 的 --scope 只影响 install 的 registry 解析，不会改发布名。
       # VSCE 不支持 scoped name，故仅在发布步内临时改写 name（作业随即结束，无需还原）。
+      # 幂等：重跑 release 时已发布的版本跳过（npm view 预检）；
+      # token 失效时 view 拦不住、npm publish 会红，凭据问题不会被跳过掩盖。
       - name: Publish to GitHub Packages
         working-directory: vscode
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          VER="${{ steps.tag.outputs.tag }}"
+          VER="${VER#v}"
           cat > .npmrc <<'EOF'
           //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
           @javenleech:registry=https://npm.pkg.github.com
           EOF
           npm pkg set name='@javenleech/logcommenter'
-          npm publish --registry=https://npm.pkg.github.com
+          if npm view "@javenleech/logcommenter@${VER}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "::notice::@javenleech/logcommenter@${VER} 已存在于 GitHub Packages，跳过发布"
+          else
+            npm publish --registry=https://npm.pkg.github.com
+          fi
