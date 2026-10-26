@@ -19,12 +19,11 @@ npm test             # build + node --test dist/test/protocol.test.js
 ## 安装
 
 1. 先安装 CLI：从 [GitHub Releases](https://github.com/javenleeCH/logcommenter/releases/latest)
-   下载 `logcommenter-<platform>-x86_64.zip`，解压后把 `logcommenter(.exe)` 加入 PATH
-   （或配置 `logcommenter.cliPath` 指向绝对路径）。
-2. 安装插件本体：
-   - 源码方式：`npm install -g @vscode/vsce && vsce package` 生成 `.vsix`，
-     VSCode 扩展面板 → `...` → 从 VSIX 安装。
-   - 或先把 `npm run build` 的产物 + `package.json` 拷到 `~/.vscode/extensions/logcommenter/`。
+   下载 `logcommenter-<platform>-x86_64.zip`，**保持目录布局解压**（exe 与 `lib/clang/`
+   目录同级），例如 Windows：解压到 `D:\Tools\logcommenter\`，得到
+   `D:\Tools\logcommenter\logcommenter.exe` + `D:\Tools\logcommenter\lib\clang\...`。
+2. 在 VSCode 设置 `logcommenter.cliPath` 填入 exe 绝对路径（见下），或把解压目录加入 PATH。
+3. 安装插件本体：`vsce package` 生成 `.vsix` → 扩展面板 `...` → 从 VSIX 安装。
 
 ## 使用
 
@@ -42,8 +41,19 @@ npm test             # build + node --test dist/test/protocol.test.js
 
 | 配置项 | 默认 | 说明 |
 |---|---|---|
-| `logcommenter.cliPath` | 空（PATH 查找） | CLI 可执行文件绝对路径 |
+| `logcommenter.cliPath` | 空（PATH 查找） | CLI 可执行文件路径：绝对路径直接使用；相对路径按 workspace 根解析；Windows 裸名回退 `logcommenter.exe`。**注意保持 release 解压目录布局：`lib/clang/` 必须与 exe 同级。** |
 | `logcommenter.compileCommands` | 空（自动探测） | `compile_commands.json` 绝对路径；留空时从当前文件目录向上逐级探测（结果缓存） |
+
+`settings.json` 示例（Windows，路径写正斜杠或双反斜杠）：
+
+```json
+{
+  "logcommenter.cliPath": "D:/Tools/logcommenter/logcommenter.exe"
+}
+```
+
+若 CLI 路径不存在，插件会在命令面板与 Output 频道（LogCommenter）给出中文诊断，
+不再透传 `spawn ... ENOENT`。
 
 ## 协议与坐标系
 

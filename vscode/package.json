@@ -2,7 +2,7 @@
   "name": "logcommenter",
   "displayName": "LogCommenter",
   "description": "C++ 源码日志工具：右键一键注释日志 / 注入类型感知观测日志（基于 Clang/LibTooling，短生命周期 CLI）",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "javenleeCH",
   "engines": {
     "vscode": "^1.85.0"

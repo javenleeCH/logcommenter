@@ -65,10 +65,29 @@ function resolveTarget(editor: vscode.TextEditor): Target {
 // CLI 执行与路径定位
 // ---------------------------------------------------------------------------
 
-function resolveCli(): string {
+interface CliResolved {
+  // 实际交给 execFile 的命令（绝对路径或 PATH 裸名）
+  bin: string;
+  // 配置显式指定的解析后绝对路径；空 = 走 PATH fallback
+  configuredPath?: string;
+}
+
+function resolveCli(rootDir: string | undefined): CliResolved {
   const cfg = vscode.workspace.getConfiguration('logcommenter');
-  const p = cfg.get<string>('cliPath', '');
-  return p ? p : 'logcommenter';
+  let p = (cfg.get<string>('cliPath', '') || '').trim();
+  if (!p) {
+    // Windows 下 CreateProcess 不展开 PATHEXT，裸名直接给 .exe；其他平台给可执行名
+    const fallback = process.platform === 'win32' ? 'logcommenter.exe' : 'logcommenter';
+    return { bin: fallback };
+  }
+  let abs = p;
+  // 相对路径按 workspace 根解析（execFile 不带 shell，否则按 VSCode 进程 cwd 查找，易 ENOENT）
+  if (!path.isAbsolute(abs) && rootDir) abs = path.resolve(rootDir, abs);
+  return { bin: abs, configuredPath: abs };
+}
+
+function rootDir(): string | undefined {
+  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
 async function resolveCompileCommands(
@@ -98,7 +117,14 @@ async function resolveCompileCommands(
 
 function runCli(args: string[]): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const bin = resolveCli();
+    const { bin, configuredPath } = resolveCli(rootDir());
+    // 配置了具体路径：前置存在性检查，避免 spawn ENOENT 的英文晦涩报错
+    if (configuredPath && !fs.existsSync(configuredPath)) {
+      return reject(new Error(
+        '配置的 CLI 不存在：' + configuredPath +
+        '。请检查设置 logcommenter.cliPath（填 logcommenter.exe 的绝对路径）；' +
+        '留空则从 PATH 查找 logcommenter.exe。'));
+    }
     channel?.appendLine('$ ' + bin + ' ' + args.join(' '));
     execFile(bin, args, {
       timeout: CLI_TIMEOUT_MS,
@@ -108,6 +134,13 @@ function runCli(args: string[]): Promise<string> {
       if (err) {
         if ((err as { killed?: boolean }).killed) {
           return reject(new Error('CLI 超时（' + CLI_TIMEOUT_MS / 1000 + 's）'));
+        }
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          return reject(new Error(
+            '无法启动 CLI：' + bin + '（文件不存在或不在 PATH）。' +
+            '请在设置 logcommenter.cliPath 中填入 logcommenter.exe 的绝对路径；' +
+            'release 解压时须保持 lib/clang 目录与 exe 同级。'));
         }
         const msg = (stderr || '').trim();
         return reject(new Error(msg ? msg.split('\n')[0] : err.message));
