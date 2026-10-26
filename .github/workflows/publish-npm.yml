@@ -33,6 +33,7 @@ jobs:
           node-version: 20
           registry-url: 'https://npm.pkg.github.com'
           scope: '@javenleech'
+          token: ${{ secrets.NPM_TOKEN }}
 
       - name: Install deps
         working-directory: vscode
@@ -50,7 +51,7 @@ jobs:
       - name: Publish to GitHub Packages
         working-directory: vscode
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           # npm 使用 .npmrc 中的 registry 配置；NODE_AUTH_TOKEN 自动注入认证
           npm publish --registry=https://npm.pkg.github.com
