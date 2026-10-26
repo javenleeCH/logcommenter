@@ -68,6 +68,18 @@
   改 sample.cpp 布局必须同步改 ci.yml 里的行号与注释。
 - release 打包从预编译工具链 `.toolchain/lib/clang/*/include` 复制资源头（含 tablegen 产物，完整）。
 
+## VSCode 插件 npm 发布（GitHub Packages，坑）
+
+- GitHub Packages 只接受 `@owner/` 作用域包名：unscoped `npm publish` 一律 E404。
+  npm 的 `--scope` 只影响 install 的 registry 解析，**不会改发布名**；而 VSCE 不支持
+  scoped name，所以 `publish-npm.yml` 在发布步内临时 `npm pkg set name='@javenleech/logcommenter'`。
+- 插件版本以 release tag 为唯一来源（workflow 内 `npm pkg set version` 同步），
+  `vscode/package.json` 的 version 字段可能滞后，勿拿它判断 release 版本。
+- npm publish 步骤曾用 `continue-on-error: true` 兜底，E404 失败被掩盖成绿门禁——已移除。
+  发布步排在 VSIX attach 之后：npm 失败只红 job，不影响 VSIX 挂到 release。
+- `package.json` 的 `"files": ["dist"]` 必须保留：`dist/` 被 gitignore，npm pack 默认排除它，
+  没有该字段时发布的包里没有 `main` 指向的编译产物（装了也跑不起来）。
+
 ## 调试
 
 - `LOGCOMMENTER_DEBUG=1`：打印 resource-dir 解析结果与内置头命中，并让 clang 打印 include

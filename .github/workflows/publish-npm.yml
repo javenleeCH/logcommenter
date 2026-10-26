@@ -42,21 +42,27 @@ jobs:
         working-directory: vscode
         run: node --test dist/test/protocol.test.js
 
-      # ---- npm publish to GitHub Packages ----
-      - name: Publish to GitHub Packages
-        working-directory: vscode
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # ---- 解析 release tag，并以 tag 同步插件版本号（tag 是唯一版本来源）----
+      - name: Resolve tag
+        id: tag
         run: |
-          # 写入临时 .npmrc：认证 + scope registry
-          cat > .npmrc <<'EOF'
-          //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
-          @javenleech:registry=https://npm.pkg.github.com
-          EOF
-          # package.json name=logcommenter（VSCE 不支持 scoped），
-          # 用 --scope 发布为 @javenleech/logcommenter
-          npm publish --scope=@javenleech --registry=https://npm.pkg.github.com
-        continue-on-error: true
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync package version from tag
+        working-directory: vscode
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VER="${TAG#v}"
+          if ! echo "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$TAG' 不是 vX.Y.Z 语义化版本，无法同步版本号"
+            exit 1
+          fi
+          echo "package.json version -> $VER"
+          npm pkg set version="$VER"
 
       # ---- VSIX package ----
       - name: Package VSIX
@@ -69,16 +75,6 @@ jobs:
           name: logcommenter-vsix
           path: logcommenter.vsix
           if-no-files-found: error
-
-      # ---- Attach VSIX to GitHub Release ----
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Attach VSIX to release
         env:
@@ -94,3 +90,19 @@ jobs:
             gh release create "$TAG" -R "${{ github.repository }}" --title "$TAG" --generate-notes
           fi
           gh release upload "$TAG" logcommenter.vsix -R "${{ github.repository }}" --clobber
+
+      # ---- npm publish to GitHub Packages（放最后：失败不吞、也不阻断 VSIX 附加）----
+      # GitHub Packages 只接受 @owner/ 作用域包名，unscoped PUT 一律 E404；
+      # 且 npm 的 --scope 只影响 install 的 registry 解析，不会改发布名。
+      # VSCE 不支持 scoped name，故仅在发布步内临时改写 name（作业随即结束，无需还原）。
+      - name: Publish to GitHub Packages
+        working-directory: vscode
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cat > .npmrc <<'EOF'
+          //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
+          @javenleech:registry=https://npm.pkg.github.com
+          EOF
+          npm pkg set name='@javenleech/logcommenter'
+          npm publish --registry=https://npm.pkg.github.com

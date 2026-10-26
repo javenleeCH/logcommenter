@@ -2,7 +2,7 @@
   "name": "logcommenter",
   "displayName": "LogCommenter",
   "description": "C++ 源码日志工具：右键一键注释日志 / 注入类型感知观测日志（基于 Clang/LibTooling，短生命周期 CLI）",
-  "version": "0.1.2",
+  "version": "0.3.0",
   "publisher": "javenleeCH",
   "license": "MIT",
   "repository": {
@@ -20,6 +20,7 @@
     "Other"
   ],
   "main": "./dist/src/extension.js",
+  "files": ["dist"],
   "activationEvents": [],
   "contributes": {
     "commands": [
@@ -75,8 +76,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/test/protocol.test.js",
     "package": "vsce package --no-dependencies",
-    "publish:vsmp": "vsce publish --no-dependencies",
-    "publish:ghp": "npm publish --registry=https://npm.pkg.github.com"
+    "publish:vsmp": "vsce publish --no-dependencies"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
