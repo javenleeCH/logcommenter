@@ -22,6 +22,11 @@
   对 `src/sample.cpp` 跑 `--comment` / `--inject --var total` / `--inject --position 10:8` /
   `--inject --var cfg`，compile-commands 用 `build/unix-default/compile_commands.json`。
 - 只改 `logengine`（纯逻辑）时用 `-DLOGCOMMENTER_BUILD_AST=OFF` 可跳过 LLVM。
+- VSCode 插件薄壳（`vscode/`，TypeScript）：`cd vscode && npm install && npm test`
+  （tsc → `dist/`，`node --test dist/test/protocol.test.js`；CI `plugin` job）。
+  `src/extension.ts` 只做选区→CLI→applyEdit；`src/protocol.ts` 是协议层（字节列↔UTF-16
+  换算 + JSON 归一），不依赖 vscode，改协议/换算必跑单测。CLI 路径解析规则：配置绝对路径
+  直接用；相对路径按 workspace 根解析；留空 Windows 回退 `logcommenter.exe`。
 
 ## 产品与技术约束（源自 docs/PRODUCT_TECH_PLAN.md，改动不得违背）
 
