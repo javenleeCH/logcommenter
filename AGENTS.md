@@ -81,6 +81,11 @@
   编译机源码根即 llvm-project 解压根：Linux 为 `/home/runner/work/<repo>/<repo>/llvm-project`，
   Windows 为 `D:\a\<repo>\<repo>\llvm-project`；本地路径为 `.toolchain-debug/llvm-src`。
 - compile_commands 索引缓存 `<db>.logc-idx` 按 mtime 失效；改了 compile_commands 后行为异常先删它。
+- compile_commands 路径匹配：比较必须走 `normalizeCompare`（统一斜杠 + Windows 盘符/路径段
+  小写折叠，Linux 保持大小写敏感）。VSCode `document.uri.fsPath` 返回小写盘符 `d:\...`，
+  而条目常存大写 `D:/...`；`_fullpath`/GetFullPathName 保留盘符原始大小写、不折叠，只统一
+  斜杠字符串比较仍不等 → 插件报 "file not found in compile_commands"。命令行传相对路径能
+  命中只是走了绝对化兜底，不代表匹配层没问题。
 - `--inject --position` 模式同时挂 `varDecl` 与 `declRefExpr` 两个 matcher：命中哪个就按
   哪个自身的源码范围过滤位置，再按 canonical decl 去重。顺序不可反——先去重会让
   "位置在引用处"的命中被声明命中提前占用 seen_ 而整体落空。
