@@ -1,0 +1,94 @@
+# 发布 VSCode 插件到 GitHub Packages (npm registry) + 打包 VSIX 上传到 GitHub Release。
+# 触发条件与 release.yml 一致：手动触发或 push v* tag。
+#
+# 产物：
+#   1. npm 包 → GitHub Packages（用户 npm install @javenleech/logcommenter）
+#   2. .vsix 文件 → 附加到 GitHub Release（用户可手动 Install from VSIX）
+#
+# 注意：VSCode Marketplace 发布需额外步骤（vsce publish），不在此工作流内。
+name: publish-npm
+permissions:
+  contents: write
+  packages: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag（VSIX 将附加到该 release）'
+        required: false
+        type: string
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    name: build & publish vscode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@javenleech'
+
+      - name: Install deps
+        working-directory: vscode
+        run: npm install --no-audit --no-fund
+
+      - name: Build (tsc)
+        working-directory: vscode
+        run: npm run build
+
+      - name: Run tests
+        working-directory: vscode
+        run: node --test dist/test/protocol.test.js
+
+      # ---- npm publish to GitHub Packages ----
+      - name: Publish to GitHub Packages
+        working-directory: vscode
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # npm 使用 .npmrc 中的 registry 配置；NODE_AUTH_TOKEN 自动注入认证
+          npm publish --registry=https://npm.pkg.github.com
+        continue-on-error: true  # 版本号未更新时不阻塞后续 VSIX 发布
+
+      # ---- VSIX package ----
+      - name: Package VSIX
+        working-directory: vscode
+        run: npx @vscode/vsce package --no-dependencies -o ../logcommenter.vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logcommenter-vsix
+          path: logcommenter.vsix
+          if-no-files-found: error
+
+      # ---- Attach VSIX to GitHub Release ----
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attach VSIX to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="${{ steps.tag.outputs.tag }}"
+          if [ -z "$TAG" ]; then
+            echo "No tag resolved, skipping release upload"
+            exit 0
+          fi
+          if ! gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "${{ github.repository }}" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" logcommenter.vsix -R "${{ github.repository }}" --clobber

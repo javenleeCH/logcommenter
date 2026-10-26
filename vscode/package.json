@@ -1,11 +1,21 @@
 {
-  "name": "logcommenter",
+  "name": "@javenleech/logcommenter",
   "displayName": "LogCommenter",
   "description": "C++ 源码日志工具：右键一键注释日志 / 注入类型感知观测日志（基于 Clang/LibTooling，短生命周期 CLI）",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "javenleeCH",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/javenleeCH/logcommenter.git",
+    "directory": "vscode"
+  },
   "engines": {
     "vscode": "^1.85.0"
+  },
+  "publishConfig": {
+    "@javenleech:registry": "https://npm.pkg.github.com",
+    "registry": "https://npm.pkg.github.com"
   },
   "categories": [
     "Other"
@@ -64,11 +74,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/protocol.test.js"
+    "test": "npm run build && node --test dist/test/protocol.test.js",
+    "package": "vsce package --no-dependencies",
+    "publish:vsmp": "vsce publish --no-dependencies",
+    "publish:ghp": "npm publish --registry=https://npm.pkg.github.com"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
     "@types/node": "^20.14.0",
-    "@types/vscode": "^1.85.0"
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0"
   }
 }
