@@ -196,6 +196,20 @@ std::string normalizeSlashes(std::string p) {
   return p;
 }
 
+// 比较专用规范化：先统一斜杠；Windows 盘符与路径段一并转小写（NTFS 不区分大小写）。
+// 背景：VSCode 的 document.uri.fsPath 返回小写盘符（d:\...），而 compile_commands 条目
+// 常存大写盘符（D:/...）；GetFullPathName/_fullpath 保留输入盘符原始大小写，不折叠，
+// 只统一斜杠后字符串比较仍不等，导致插件路径失配（命令行传相对路径走绝对化兜底才命中）。
+std::string normalizeCompare(std::string p) {
+  p = normalizeSlashes(std::move(p));
+#ifdef _WIN32
+  for (auto &c : p) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+#endif
+  return p;
+}
+
 // 把路径解析为绝对路径（基于当前工作目录），失败返回空串。
 // 用于把用户传入的相对路径与 compile_commands 中的绝对路径对齐。
 // 返回前归一为 '/' 分隔符。
@@ -280,49 +294,38 @@ bool CompileIndex::locate(const std::string &file, size_t *offset,
 
 bool CompileIndex::readEntry(const std::string &file,
                              std::string *entryJson) const {
-  size_t off, len;
-  if (locate(file, &off, &len)) {
-    return readAt(off, len, entryJson);
-  }
-  // 斜杠归一后直接比较：覆盖 "用户传正斜杠 vs compile_commands 存反斜杠" 的纯字符串
-  // 差异，且不依赖文件系统存在性（_fullpath/realpath 可能受 cwd/存在性影响）。
-  std::string nfile = normalizeSlashes(file);
-  if (nfile != file) {
-    auto it = idx_.find(nfile);
-    if (it != idx_.end()) {
-      return readAt(it->second.offset, it->second.length, entryJson);
-    }
-  }
+  const std::string nfile = normalizeCompare(file);
+
+  // 第一遍：斜杠 +（Windows）大小写归一后遍历比较。覆盖：精确相等、斜杠方向差异、
+  // 盘符/路径段大小写差异（VSCode fsPath 小写盘符 vs compile_commands 大写盘符）。
   for (auto &kv : idx_) {
-    if (normalizeSlashes(kv.first) == nfile) {
+    if (normalizeCompare(kv.first) == nfile) {
       return readAt(kv.second.offset, kv.second.length, entryJson);
     }
   }
-  // 兜底：compile_commands 里通常是绝对路径，用户可能传相对路径。
-  // 先试"相对→绝对"直接定位，再遍历索引比较规范化后的绝对路径。
+
+  // 第二遍兜底：compile_commands 里是绝对路径而用户传相对路径时，先把用户路径绝对化，
+  // 再与"条目绝对路径"或"directory 拼接相对 file"归一后的结果比较。
   std::string abs = absolutePath(file);
-  if (!abs.empty() && abs != file && locate(abs, &off, &len)) {
-    return readAt(off, len, entryJson);
-  }
-  if (!abs.empty()) {
-    for (auto &kv : idx_) {
-      std::string kabs;
-      if (isAbsolutePath(kv.first)) {
-        kabs = absolutePath(kv.first);
-      } else if (kv.second.dirLen > 0) {
-        // 条目 file 是相对路径：基准是该条目的 directory（真实 monorepo 常见，
-        // 如鸿蒙 "file":"../../../foundation/..." + "directory":"/srv/workspace/..."），
-        // 不是当前工作目录。按需读 directory 原文后反转义，再拼接绝对化比较。
-        std::string dirRaw;
-        if (readAt(kv.second.dirOff, kv.second.dirLen, &dirRaw)) {
-          std::string dir = unescapeJson(dirRaw);
-          if (!dir.empty() && isAbsolutePath(dir))
-            kabs = absolutePath(joinPath(dir, kv.first));
-        }
+  if (abs.empty()) return false;
+  const std::string nabs = normalizeCompare(abs);
+  for (auto &kv : idx_) {
+    std::string kabs;
+    if (isAbsolutePath(kv.first)) {
+      kabs = absolutePath(kv.first);
+    } else if (kv.second.dirLen > 0) {
+      // 条目 file 是相对路径：基准是该条目的 directory（真实 monorepo 常见，
+      // 如鸿蒙 "file":"../../../foundation/..." + "directory":"/srv/workspace/..."），
+      // 不是当前工作目录。按需读 directory 原文后反转义，再拼接绝对化比较。
+      std::string dirRaw;
+      if (readAt(kv.second.dirOff, kv.second.dirLen, &dirRaw)) {
+        std::string dir = unescapeJson(dirRaw);
+        if (!dir.empty() && isAbsolutePath(dir))
+          kabs = absolutePath(joinPath(dir, kv.first));
       }
-      if (!kabs.empty() && kabs == abs) {
-        return readAt(kv.second.offset, kv.second.length, entryJson);
-      }
+    }
+    if (!kabs.empty() && normalizeCompare(kabs) == nabs) {
+      return readAt(kv.second.offset, kv.second.length, entryJson);
     }
   }
   return false;

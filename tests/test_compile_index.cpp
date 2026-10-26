@@ -147,6 +147,34 @@ TEST_CASE(index_read_slash_normalize_windows_path) {
   std::remove(db.c_str());
 }
 
+#ifdef _WIN32
+TEST_CASE(index_read_case_insensitive_windows_drive) {
+  // 真实插件形态：VSCode document.uri.fsPath 返回小写盘符 + 反斜杠
+  // （d:\codespace\...），而 compile_commands 存大写盘符 + 正斜杠（D:/...）。
+  // NTFS 不区分大小写，比较时必须折叠盘符与路径段大小写；不依赖文件存在。
+  std::string db = tmpDir() + "/logc_case_db.json";
+  {
+    std::ofstream f(db);
+    f << "[\n"
+      << "  {\"directory\":\"D:/codespace/CDir/vkdemo\","
+      << "\"file\":\"D:/codespace/CDir/vkdemo/src/main.cpp\","
+      << "\"command\":\"cl /c src/main.cpp\"}\n"
+      << "]\n";
+  }
+  CompileIndex idx;
+  std::string err;
+  EXPECT_TRUE(idx.build(db, &err));
+  std::string entry;
+  // 小写盘符 + 反斜杠（插件 fsPath 形态）→ 应命中大写盘符 + 正斜杠的键
+  EXPECT_TRUE(idx.readEntry("d:\\codespace\\CDir\\vkdemo\\src\\main.cpp", &entry));
+  EXPECT_CONTAINS(entry, "main.cpp");
+  // 路径段大小写混用（codespace vs CodeSpace）同样应命中
+  EXPECT_TRUE(idx.readEntry("D:/CodeSpace/CDir/vkdemo/src/main.cpp", &entry));
+  EXPECT_CONTAINS(entry, "main.cpp");
+  std::remove(db.c_str());
+}
+#endif
+
 TEST_CASE(index_read_relative_file_via_directory) {
   // 真实 monorepo（鸿蒙等）：file 是相对路径，基准是该条目的 directory 字段，
   // 不是当前工作目录。用户（VSCode / CLI）传真实绝对路径时应命中。
