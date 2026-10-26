@@ -1,7 +1,0 @@
-node_modules/**
-src/**
-test/**
-tsconfig.json
-.gitignore
-**/*.map
-*.vsix

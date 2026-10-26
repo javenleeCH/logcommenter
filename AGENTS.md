@@ -77,8 +77,10 @@
   `vscode/package.json` 的 version 字段可能滞后，勿拿它判断 release 版本。
 - npm publish 步骤曾用 `continue-on-error: true` 兜底，E404 失败被掩盖成绿门禁——已移除。
   发布步排在 VSIX attach 之后：npm 失败只红 job，不影响 VSIX 挂到 release。
-- `package.json` 的 `"files": ["dist"]` 必须保留：`dist/` 被 gitignore，npm pack 默认排除它，
-  没有该字段时发布的包里没有 `main` 指向的编译产物（装了也跑不起来）。
+- 打包白名单统一用 `package.json` 的 `"files": ["dist"]`（npm 与 vsce 3.x 双端生效）：
+  `dist/` 被 gitignore，npm pack 默认排除它，没有白名单发布的包里就没有 `main` 指向的
+  编译产物；`.npmignore` 也解不掉（npm 会合并 `.npmignore` 与 `.gitignore` 规则）。
+  **vsce 报错拒绝 `.vscodeignore` 与 `"files"` 并存**，故 `.vscodeignore` 已删，勿加回。
 
 ## 调试
 
