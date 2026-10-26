@@ -1,5 +1,5 @@
 {
-  "name": "@javenleech/logcommenter",
+  "name": "logcommenter",
   "displayName": "LogCommenter",
   "description": "C++ 源码日志工具：右键一键注释日志 / 注入类型感知观测日志（基于 Clang/LibTooling，短生命周期 CLI）",
   "version": "0.1.2",
@@ -14,8 +14,7 @@
     "vscode": "^1.85.0"
   },
   "publishConfig": {
-    "@javenleech:registry": "https://npm.pkg.github.com",
-    "registry": "https://npm.pkg.github.com"
+    "@javenleech:registry": "https://npm.pkg.github.com"
   },
   "categories": [
     "Other"

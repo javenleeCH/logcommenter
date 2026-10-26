@@ -2,10 +2,8 @@
 # 触发条件与 release.yml 一致：手动触发或 push v* tag。
 #
 # 产物：
-#   1. npm 包 → GitHub Packages（用户 npm install @javenleech/logcommenter）
+#   1. npm 包 → GitHub Packages
 #   2. .vsix 文件 → 附加到 GitHub Release（用户可手动 Install from VSIX）
-#
-# 注意：VSCode Marketplace 发布需额外步骤（vsce publish），不在此工作流内。
 name: publish-npm
 permissions:
   contents: write
@@ -31,9 +29,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: 'https://npm.pkg.github.com'
-          scope: '@javenleech'
-          token: ${{ secrets.NPM_TOKEN }}
 
       - name: Install deps
         working-directory: vscode
@@ -51,11 +46,17 @@ jobs:
       - name: Publish to GitHub Packages
         working-directory: vscode
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          # npm 使用 .npmrc 中的 registry 配置；NODE_AUTH_TOKEN 自动注入认证
-          npm publish --registry=https://npm.pkg.github.com
-        continue-on-error: true  # 版本号未更新时不阻塞后续 VSIX 发布
+          # 写入临时 .npmrc：认证 + scope registry
+          cat > .npmrc <<'EOF'
+          //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
+          @javenleech:registry=https://npm.pkg.github.com
+          EOF
+          # package.json name=logcommenter（VSCE 不支持 scoped），
+          # 用 --scope 发布为 @javenleech/logcommenter
+          npm publish --scope=@javenleech --registry=https://npm.pkg.github.com
+        continue-on-error: true
 
       # ---- VSIX package ----
       - name: Package VSIX
