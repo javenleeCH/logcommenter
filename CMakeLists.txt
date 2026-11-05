@@ -24,6 +24,7 @@ add_library(logcommenter_core
   src/logengine/text_edit.cpp
   src/logengine/compile_index.cpp
   src/logengine/args.cpp
+  src/logengine/preamble.cpp
 )
 target_include_directories(logcommenter_core PUBLIC src)
 
@@ -35,6 +36,7 @@ add_executable(logcommenter_tests
   tests/test_text_edit.cpp
   tests/test_compile_index.cpp
   tests/test_args.cpp
+  tests/test_preamble.cpp
 )
 target_link_libraries(logcommenter_tests PRIVATE logcommenter_core)
 add_test(NAME core_tests COMMAND logcommenter_tests)

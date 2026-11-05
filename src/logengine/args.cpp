@@ -74,6 +74,8 @@ CliArgs parseArgs(int argc, const char **argv) {
       }
     } else if (arg == "--friend") {
       a.friend_ = true;
+    } else if (arg == "--logc-internal-pch") {
+      a.internalPch = true;
     } else if (arg == "--help" || arg == "-h") {
       a.help = true;
     } else {

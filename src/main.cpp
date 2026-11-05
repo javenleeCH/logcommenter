@@ -33,6 +33,15 @@ static void usage(const char *prog) {
 
 int main(int argc, const char **argv) {
   CliArgs a = parseArgs(argc, argv);
+  // 内部路径：PCH 缓存构建（由引擎后台 detach 自调用）
+  if (a.internalPch) {
+    std::string perr;
+    if (!buildPchCache(a, a.compileJson, argv[0], &perr)) {
+      std::fprintf(stderr, "error: pch build: %s\n", perr.c_str());
+      return 1;
+    }
+    return 0;
+  }
   if (a.help) {
     usage(argv[0]);
     return 0;

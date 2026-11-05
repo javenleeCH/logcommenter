@@ -9,6 +9,7 @@
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -20,7 +21,8 @@ cc_applied = applied + ".cc.json"
 
 
 def run(args):
-    r = subprocess.run([exe] + args, capture_output=True, text=True)
+    r = subprocess.run([exe] + args, capture_output=True, text=True,
+                       env=dict(os.environ, LOGC_DISABLE_PCH="1"))
     if r.returncode != 0:
         sys.exit("FAIL: %s\n%s" % (args, r.stderr))
     return json.loads(r.stdout)
@@ -59,9 +61,13 @@ d3 = run(["--inject", "--file", applied, "--var", "total",
           "--compile-commands", cc_applied])
 assert not d3["edits"], "idempotency broken: %s" % d3["edits"]
 
-# 成功后清理（失败时保留现场便于排查）；.logc-idx 是工具在 db 旁生成的索引缓存
+# 成功后清理（失败时保留现场便于排查）；.logc-idx / .logc-pch 是工具在
+# db 旁生成的索引与 PCH 缓存
 os.remove(applied)
 os.remove(cc_applied)
-if os.path.exists(cc_applied + ".logc-idx"):
-    os.remove(cc_applied + ".logc-idx")
+for extra in (cc_applied + ".logc-idx", cc_applied + ".logc-pch"):
+    if os.path.isdir(extra):
+        shutil.rmtree(extra, ignore_errors=True)
+    elif os.path.exists(extra):
+        os.remove(extra)
 print("E2E inject-apply-parse-idempotent OK")

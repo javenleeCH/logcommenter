@@ -87,6 +87,26 @@
 
 - `LOGCOMMENTER_DEBUG=1`：打印 resource-dir 解析结果与内置头命中，并让 clang 打印 include
   搜索路径（`-v`）。
+- **PCH 前置头缓存**（解析加速，8s 级重模板头 → 3s 级）：首次运行后台 detach
+  自调（`--logc-internal-pch` 隐藏旗标）构建，之后命中 `<db>.logc-pch/<hash>/`
+  的 `preamble.hpp.pch`；哈希 = clang 版本 + resource-dir + 编译参数原文 +
+  指令层 preamble（`src/logengine/preamble.{h,cpp}`：保留全部指令/注释行、
+  代码行置空保行号——指令层决定预处理状态，与全量解析等价）。装载走
+  `-Xclang -include-pch`（cl/gcc 驱动模式通用）。三个坑：
+  1. 进程内 ToolInvocation **不走**驱动的 job 派生：/Fp、-o、-x c++-header
+     全被忽略（ProgramAction 停在编译语义、输出名被派生成 obj 名）——
+     PCH 输出必须用自定义 action 在 BeginSourceFileAction 里钉死
+     FrontendOpts.OutputFile/ProgramAction（见 PchBuildAction）。
+  2. prune 陈旧哈希目录的比较必须走 fs::path（directory_iterator 产生反斜杠，
+     我们拼接的是正斜杠，字符串永不相等会把当前目录也删掉）。
+  3. 后台构建诊断必须 IgnoringDiagConsumer 静默（Unix fork 子进程共享父进程
+     的流）；失败经 error marker 文件沉淀防反复 spawn。PCH 装载失败自动弃
+     缓存裸解析重试（头文件被改等）。删除 `.logc-pch` 即强制重建；
+     `LOGC_DISABLE_PCH=1` 可整体跳过（测试隔离用，e2e 脚本的 run 均已带）。
+- CLI stderr 协议只承载自身 error：`EngineAction::BeginSourceFileAction` 里
+  `CI.getDiagnostics().setIgnoreAllWarnings(true)`（LLVM 23 的 -w 等价物，仅
+  Warning 级；Error/Fatal 保留——解析失败必须能诊断），clang 对被分析源码的
+  -Wdeprecated/-Wunused 等噪声不进 stderr。LLVM 23 无 setSuppressAllWarnings。
 - 想单步进入 LLVM/Clang 库内部：`./build.sh debug`（或手动下载 `.toolchain-debug` 并以
   `unix-default-debug` / `windows-msvc-debug` preset 以 Debug 编译）。普通断点只在自己代码里时，release 版即可。
 - debug asset 内附带完整 LLVM 源码树 `.toolchain-debug/llvm-src`（调试符号记录的是编译机
@@ -95,7 +115,10 @@
   - lldb：`settings set target.source-map <编译机源码根> <本地 llvm-src 路径>`
   编译机源码根即 llvm-project 解压根：Linux 为 `/home/runner/work/<repo>/<repo>/llvm-project`，
   Windows 为 `D:\a\<repo>\<repo>\llvm-project`；本地路径为 `.toolchain-debug/llvm-src`。
-- compile_commands 索引缓存 `<db>.logc-idx` 按 mtime 失效；改了 compile_commands 后行为异常先删它。
+- compile_commands 索引缓存 `<db>.logc-idx`（v3）按 mtime+size 双检失效：mtime 只有秒级
+  精度，同秒重写 db 靠 size 变化兜住；键在 saveCache 时必须 JSON 转义——v2 未转义时
+  Windows 反斜杠路径经缓存往返被 loadCache 的转义解析吞掉 `\`，第二次查找必失败
+  （B-group E2E 在 Windows 从未绿过即此因）。改了 compile_commands 后行为异常仍可先删它。
 - compile_commands 路径匹配：比较必须走 `normalizeCompare`（统一斜杠 + Windows 盘符/路径段
   小写折叠，Linux 保持大小写敏感）。VSCode `document.uri.fsPath` 返回小写盘符 `d:\...`，
   而条目常存大写 `D:/...`；`_fullpath`/GetFullPathName 保留盘符原始大小写、不折叠，只统一
@@ -104,6 +127,16 @@
 - `--inject --position` 模式同时挂 `varDecl` 与 `declRefExpr` 两个 matcher：命中哪个就按
   哪个自身的源码范围过滤位置，再按 canonical decl 去重。顺序不可反——先去重会让
   "位置在引用处"的命中被声明命中提前占用 seen_ 而整体落空。
+- **主文件收敛（P0）**：`--var`/`--position`/`--comment` 命中头文件同名声明（行号与主
+  文件撞号）或宏展开合成位置（filename 空、范围跨数百行）时，(line,col) 不属于主
+  文件却被当主文件行号输出——真实 monorepo 大头文件（vulkan/glm/STL）必炸。
+  `handleInject`/`handleComment` 先过 `SM.getFileID(SM.getFileLoc(...)) ==
+  SM.getMainFileID()` 过滤，`EndSourceFileAction` 的 inserts 循环再兜底滤一道
+  （协议不变量：非 friend edit 必须在主文件内）。
+- **函数指针 typedef 原型形参崩溃**：C 头文件大量 `typedef Ret (*PFN_x)(T arg)` 的
+  形参不属于任何 FunctionDecl，`getParentFunctionOrMethod()` 返回 null，
+  `dyn_cast<FunctionDecl>(null DeclContext*)` 直接解引用崩溃（0xC0000005）。
+  必须 `dyn_cast_or_null`。回归：`tests/e2e/noise_sample.cpp`（e2e_bgroup G 组）。
 - 注入插入点 = 声明语句（DeclStmt，含 `;`）之后；for/if/switch/while 头部声明插到
   复合语句体开头，体无大括号则放弃。TextEdit 语义：纯插入在 (line,col) 字符之前
   （1-based，col=行长+1 为行尾）。**改插入逻辑后必须跑 `tools/e2e_apply_check.py`**

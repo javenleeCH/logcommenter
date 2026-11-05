@@ -9,6 +9,12 @@
 
 namespace logc {
 
+// 构建 --file 的 PCH 缓存（<compileJson>.logc-pch/）：由 runClangEngine 在缓存
+// 缺失时 detach 自调用（--logc-internal-pch 隐藏旗标），也可显式调用预热。
+// 成功返回 true；err 承载失败原因。
+bool buildPchCache(const CliArgs &args, const std::string &compileJson,
+                   const std::string &exePath, std::string *err);
+
 // 对 file 执行 args 指定的动作；编译参数从 compileJson（compile_commands.json）
 // 中按偏移索引精准取一条，不加载全量。exePath 为当前可执行文件路径（argv[0]），
 // 用于运行时定位随包分发的 clang 内置头目录（clang-headers），不依赖构建机路径。

@@ -75,6 +75,18 @@ src/
 - 查询时按索引 `seek + read` **单条**编译参数（O(1)），再交给 Clang 解析该文件；
 - `.logc-idx` 带 mtime 失效：`compile_commands.json` 未变则跳过重扫。
 
+### 重模板头 PCH 加速
+
+vulkan/glm/STL 这类重模板头让单文件解析动辄 8s+。logcommenter 用 **PCH 前置头缓存**
+把重复解析降到 3s 内：
+
+- 首次运行：正常解析，同时**后台静默构建** PCH（不打断当前操作）；
+- 之后运行：命中 `<compile_commands.json>.logc-pch/<hash>/` 缓存（哈希覆盖 clang
+  版本、编译参数、指令层 preamble——任一变化自动重建）；
+- PCH 失配（依赖头被改等）自动弃缓存裸解析，结果不受影响；删 `.logc-pch` 强制重建。
+
+实测（Vulkan 教程工程，vulkan.hpp + glm + glfw 共 5.5 万行模板头）：冷 8.3s → 暖 2.7s。
+
 ## 构建
 
 依赖 **LLVM/Clang 23.1.3**。预编译的静态 LLVM/Clang 工具链作为 release asset 提供（见 `toolchain.yml`），`tools/fetch_llvm.sh` 下载后用现代 CMake `find_package` 消费，**不再每次从源码编译 LLVM**。最简单的方式是直接跑构建脚本；也可手动按 preset 配置。
