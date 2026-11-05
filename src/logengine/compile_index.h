@@ -40,11 +40,14 @@ class CompileIndex {
   size_t size() const { return idx_.size(); }
   const std::string &path() const { return jsonPath_; }
 
-  // 索引是否过期（compile_commands.json 的 mtime 变化）
+  // 索引是否过期（compile_commands.json 的 mtime 或大小变化）
   bool isStale() const;
 
   // 当前 JSON 文件的 mtime（已过期或不存在返回 0）
   std::time_t sourceMtime() const;
+
+  // 当前 JSON 文件的字节大小（不存在返回 -1）
+  long long sourceSize() const;
 
  private:
   // 按已知 (offset,length) seek+read 单条条目
@@ -52,6 +55,8 @@ class CompileIndex {
   std::string jsonPath_;
   std::map<std::string, Entry> idx_;
   std::time_t mtime_ = 0;
+  // 文件大小：mtime 秒级精度下同秒重写（改内容）检测不到，补 size 双保险。
+  long long size_ = 0;
 };
 
 }  // namespace logc

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <sstream>
 #include <vector>
 
 #ifdef _WIN32
@@ -270,9 +271,12 @@ bool CompileIndex::build(const std::string &jsonPath, std::string *err) {
   std::string data;
   if (!readFileBytes(jsonPath, &data, err)) return false;
 
-  // 记录 mtime
+  // 记录 mtime + size（isStale 双检：mtime 秒级精度下同秒重写靠 size 兜住）
   struct stat st;
-  if (stat(jsonPath.c_str(), &st) == 0) mtime_ = st.st_mtime;
+  if (stat(jsonPath.c_str(), &st) == 0) {
+    mtime_ = st.st_mtime;
+    size_ = static_cast<long long>(st.st_size);
+  }
 
   idx_.clear();
   auto entries = scanEntries(data);
@@ -344,11 +348,21 @@ bool CompileIndex::readAt(size_t off, size_t len,
 bool CompileIndex::saveCache(const std::string &cachePath) const {
   std::ofstream f(cachePath, std::ios::trunc);
   if (!f) return false;
-  // v2：首行版本标记，条目新增 d/dl（directory 内容区间），旧缓存不兼容时
-  // loadCache 返回 false 由调用方重建，避免静默用缺 directory 的旧索引。
-  f << "#logc-idx-v2\n";
+  // v3：键 JSON 转义修复（v2 未转义反斜杠路径，往返损坏）+ #src 状态行
+  // （json 的 msize/mtime 快照，供 isStale 双检）。旧缓存不兼容，loadCache
+  // 返回 false 由调用方重建。
+  f << "#logc-idx-v3\n";
+  f << "#src " << size_ << " " << mtime_ << "\n";
   for (auto &kv : idx_) {
-    f << "{\"f\":\"" << kv.first << "\",\"o\":" << kv.second.offset
+    // 键含反斜杠（Windows 路径）或引号时必须转义：loadCache 按 JSON 转义解析，
+    // 不转义则 "\x" 被当转义序列、反斜杠被吞，缓存往返后 key 损坏、查找失败。
+    std::string esc;
+    esc.reserve(kv.first.size() + 8);
+    for (char c : kv.first) {
+      if (c == '\\' || c == '"') esc += '\\';
+      esc += c;
+    }
+    f << "{\"f\":\"" << esc << "\",\"o\":" << kv.second.offset
       << ",\"l\":" << kv.second.length << ",\"d\":" << kv.second.dirOff
       << ",\"dl\":" << kv.second.dirLen << "}\n";
   }
@@ -359,10 +373,16 @@ bool CompileIndex::loadCache(const std::string &cachePath,
                              const std::string &jsonPath) {
   std::ifstream f(cachePath);
   if (!f) return false;
-  // 版本检测：旧格式（无首行标记 / 无 d/dl）→ 返回 false，调用方走 build 重建。
+  // 版本检测 + #src 状态行（json 的 size/mtime 快照）：旧格式或缺失时返回
+  // false，调用方走 build 重建。
   std::string firstLine;
-  if (!std::getline(f, firstLine) || firstLine != "#logc-idx-v2")
+  if (!std::getline(f, firstLine) || firstLine != "#logc-idx-v3")
     return false;
+  std::string srcLine;
+  if (!std::getline(f, srcLine) || srcLine.rfind("#src ", 0) != 0)
+    return false;
+  std::istringstream is(srcLine.substr(5));
+  if (!(is >> size_ >> mtime_)) return false;
   idx_.clear();
   std::string line;
   while (std::getline(f, line)) {
@@ -420,10 +440,6 @@ bool CompileIndex::loadCache(const std::string &cachePath,
     idx_[file] = e;
   }
   jsonPath_ = jsonPath;
-  // isStale() 用 mtime_ 判断"json 是否比缓存新"。这里必须记缓存文件(生成时刻)的
-  // mtime；若记加载时 json 的 mtime，则 isStale() 里 cur==mtime_ 恒为 false，旧缓存永不失效。
-  struct stat st;
-  if (stat(cachePath.c_str(), &st) == 0) mtime_ = st.st_mtime;
   return true;
 }
 
@@ -433,9 +449,20 @@ std::time_t CompileIndex::sourceMtime() const {
   return 0;
 }
 
+long long CompileIndex::sourceSize() const {
+  struct stat st;
+  if (stat(jsonPath_.c_str(), &st) == 0)
+    return static_cast<long long>(st.st_size);
+  return -1;
+}
+
 bool CompileIndex::isStale() const {
+  // mtime + size 双检：mtime 只有秒级精度，同秒内重写 json（改内容）靠
+  // size 变化兜住，避免用旧 offset 读错条目。
   std::time_t cur = sourceMtime();
-  return cur != 0 && cur != mtime_;
+  if (cur == 0) return false;
+  if (cur != mtime_) return true;
+  return sourceSize() != size_;
 }
 
 }  // namespace logc

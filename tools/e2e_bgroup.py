@@ -8,11 +8,14 @@
   C. apply 后副本必须能再次编译（clang++ -fsyntax-only）
   D. 幂等：对已注入副本再跑 --var g --friend → 无任何新 edit
   E. --inject --var g（无 --friend）→ (ptr) 地址兜底
-  F. --inject --var bx --friend（模板类）→ 跳过 friend，仍 (ptr) 兜底
+  G. 头文件噪声韧性（noise_sample.cpp + noise_helper.h）：--var 命中函数指针
+     typedef 原型形参（无 FunctionDecl 父）曾崩溃；头文件同名局部与主文件
+     行号撞号曾输出错位 edit——须只产出主文件目标变量 1 条 edit
+  H. PCH 缓存（noise_sample.cpp）：同步构建（--logc-internal-pch）后，命中
+     缓存的运行必须与裸解析产出完全一致的 JSON（等价性回归）
 
-用法: e2e_bgroup.py <logcommenter-exe>
-依赖: 系统 clang++（仅用于编译验证）；compile_commands 由脚本自造（单条）。
 """
+import glob
 import json
 import os
 import shutil
@@ -25,7 +28,8 @@ def fail(msg):
 
 
 def run(exe, args):
-    r = subprocess.run([exe] + args, capture_output=True, text=True)
+    r = subprocess.run([exe] + args, capture_output=True, text=True,
+                       env=dict(os.environ, LOGC_DISABLE_PCH="1"))
     if r.returncode != 0:
         fail("%s\n%s" % (args, r.stderr))
     return json.loads(r.stdout)
@@ -48,6 +52,8 @@ def clean(*paths):
             os.remove(p)
         if os.path.exists(p + ".logc-idx"):
             os.remove(p + ".logc-idx")
+        if os.path.exists(p + ".logc-pch"):
+            shutil.rmtree(p + ".logc-pch", ignore_errors=True)
 
 
 def main():
@@ -138,6 +144,52 @@ def main():
         fail("template class must skip friend (single-file): %s" % json.dumps(d))
     if "(ptr)" not in json.dumps(d):
         fail("template class should fall back to ptr: %s" % json.dumps(d))
+
+    # G) 头文件噪声韧性：--var 命中 typedef 原型形参（曾崩溃）+ 头文件同名
+    #    局部行号撞号（曾误过位置过滤输出错位行号）时，必须只产出主文件
+    #    目标变量自身的 1 条 edit，退出码 0。
+    noise_src = os.path.join(e2e_dir, "noise_sample.cpp")
+    cc_noise = os.path.join(e2e_dir, "cc_noise.json")
+    with open(cc_noise, "w", encoding="utf-8") as f:
+        json.dump([{"file": noise_src, "directory": e2e_dir,
+                    "command": "clang++ -std=c++17 -fsyntax-only -I%s %s" %
+                    (e2e_dir, noise_src)}], f)
+    d_var = run(exe, ["--inject", "--file", noise_src, "--var", "imageCount",
+                      "--compile-commands", cc_noise])
+    if isinstance(d_var, list) or len(d_var["edits"]) != 1:
+        fail("noise: --var should yield exactly 1 edit: %s" % json.dumps(d_var))
+    if d_var["edits"][0]["range"]["start"]["line"] != 11:
+        fail("noise: edit should be at main-file decl line 11: %s" % json.dumps(d_var))
+    # position 11:14 落在主文件 imageCount 声明 token；头文件第 11 行同名局部
+    # 行号撞号不得混入。
+    d_pos = run(exe, ["--inject", "--file", noise_src, "--position", "11:14",
+                      "--compile-commands", cc_noise])
+    if isinstance(d_pos, list) or len(d_pos["edits"]) != 1:
+        fail("noise: --position should yield exactly 1 edit: %s" % json.dumps(d_pos))
+
+    # H) PCH 缓存：同步构建（--logc-internal-pch）→ 命中缓存的运行必须与
+    #    裸解析产出完全一致的 JSON（等价性），且缓存目录只留当前哈希。
+    r = subprocess.run([exe, "--logc-internal-pch", "--file", noise_src,
+                        "--compile-commands", cc_noise],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        fail("pch build failed: %s" % r.stderr)
+    pch_root = cc_noise + ".logc-pch"
+    pchs = [p for p in glob.glob(os.path.join(pch_root, "*", "preamble.hpp.pch"))
+            if os.path.getsize(p) > 1024]
+    if not pchs:
+        fail("pch: cache not built: %s" % os.listdir(pch_root) if
+             os.path.isdir(pch_root) else "no pch dir")
+    rw = subprocess.run([exe, "--inject", "--file", noise_src, "--var",
+                         "imageCount", "--compile-commands", cc_noise],
+                        capture_output=True, text=True)
+    if rw.returncode != 0:
+        fail("pch warm run failed: %s" % rw.stderr)
+    d_warm = json.loads(rw.stdout)
+    if json.dumps(d_warm) != json.dumps(d_var):
+        fail("pch: warm output differs from bare parse: %s vs %s" %
+             (json.dumps(d_warm), json.dumps(d_var)))
+    clean(cc_noise)
 
     clean(hdr_e2e, applied, cc_path, applied_cc)
     print("E2E B-group (lookup/friend/multi-file/idempotent/fallback) OK")

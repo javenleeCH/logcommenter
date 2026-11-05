@@ -19,11 +19,12 @@
 #endif
 
 #include <filesystem>
+#include <fstream>
 
 #include "../logengine/compile_index.h"
 #include "../logengine/format_table.h"
 #include "../logengine/args.h"
-
+#include "../logengine/preamble.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
@@ -32,6 +33,7 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Basic/Version.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendActions.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/CompilationDatabase.h"
@@ -204,6 +206,10 @@ class Observer : public MatchFinder::MatchCallback {
       Str = res.Nodes.getNodeAs<StringLiteral>("stream_log_str");
     }
     if (!Call || !Str || !isTarget(Str)) return;
+    // 主文件收敛：头文件 inline 函数里的目标日志同样以主文件行号输出会错位。
+    SourceManager &SM = res.Context->getSourceManager();
+    if (SM.getFileID(SM.getFileLoc(Call->getBeginLoc())) != SM.getMainFileID())
+      return;
     // 流式日志是链式 operator<<：match 命中的是最内层调用，须逐层上溯取整条
     // 链的范围，否则多行链只注释首行会留下悬空续行、破坏语法。
     const CallExpr *full = Call;
@@ -248,6 +254,14 @@ class Observer : public MatchFinder::MatchCallback {
                             : nullptr;
     if (!VD) VD = res.Nodes.getNodeAs<VarDecl>("target_var");
     if (!VD) return;
+    // 主文件收敛：--file 之外的命中（头文件变量/形参、宏展开合成位置）一律
+    // 跳过——其 (line,col) 属于别的文件，行号撞号会误过位置过滤，进入输出
+    // 后 TextEdit 会指向主文件的错误位置（真实 monorepo 大头文件必炸）。
+    SourceManager &SM = res.Context->getSourceManager();
+    if (SM.getFileID(SM.getFileLoc(
+            Ref ? Ref->getBeginLoc() : VD->getLocation())) !=
+        SM.getMainFileID())
+      return;
     // 位置模式：光标必须落在命中的节点（声明或引用）自身范围内。
     // 顺序要求：先位置过滤再 seen_ 去重——varDecl 与 declRefExpr 两个 matcher
     // 对同一变量各回调一次，若先去重，"位置在引用处"的命中会被未过位置的
@@ -314,8 +328,12 @@ class Observer : public MatchFinder::MatchCallback {
     if (isLocal) {
       at = insertLocAfterDecl(res, VD);
     } else if (isParam) {
+      // 形参的父可能是 null：函数指针 typedef 原型（C 头文件大量存在）的
+      // 形参不属于任何 FunctionDecl，getParentFunctionOrMethod() 返回 null；
+      // dyn_cast 对 null DeclContext* 会解引用崩溃，必须用 dyn_cast_or_null。
       at = insertLocAtFunctionBodyStart(
-          res, dyn_cast<FunctionDecl>(VD->getParentFunctionOrMethod()));
+          res, dyn_cast_or_null<FunctionDecl>(
+                   VD->getParentFunctionOrMethod()));
     } else {
       at = insertLocAtFunctionBodyStart(res, enclosingFunction(*res.Context, Ref));
     }
@@ -464,6 +482,15 @@ class EngineAction : public ASTFrontendAction {
                std::string *err)
       : args_(args), edits_(edits), err_(err) {}
 
+  // stderr 协议只承载 CLI 自身错误。clang 对被分析源码的 warning 诊断
+  // （-Wdeprecated/-Wunused 等，用户代码质量信号）不属于产品输出，统一静默
+  // ——即 -w 语义（仅 Warning，Error/Fatal 不受影响；cl/gcc 命令行风格都
+  // 生效）。解析失败（缺头文件等）必须仍能浮出诊断。
+  bool BeginSourceFileAction(CompilerInstance &CI) override {
+    CI.getDiagnostics().setIgnoreAllWarnings(true);
+    return true;
+  }
+
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef) override {
     return std::make_unique<EngineConsumer>(args_, &col_, &mf_);
@@ -472,6 +499,10 @@ class EngineAction : public ASTFrontendAction {
   void EndSourceFileAction() override {
     SourceManager &SM = getCompilerInstance().getSourceManager();
     for (auto &p : col_.inserts) {
+      // 协议不变量：非 friend edit 必须位于主文件（--file）。防御性兜底——
+      // 头文件/宏合成位置即便漏过上游过滤，也不允许以主文件行号输出。
+      if (SM.getFileID(SM.getFileLoc(p.first)) != SM.getMainFileID())
+        continue;
       TextEdit e;
       e.start.line = SM.getSpellingLineNumber(p.first);
       e.start.col = SM.getSpellingColumnNumber(p.first);
@@ -546,6 +577,31 @@ struct EngineFactory : FrontendActionFactory {
   std::string *err_;
 };
 
+// PCH 构建动作：动作启动时直接钉死输出路径与程序动作。进程内
+// ToolInvocation 构建的 invocation 不走驱动的 job 派生（/Fp、-o、
+// -x c++-header 都被忽略，ProgramAction 停留在编译目标语义、输出被派生为
+// obj 名），必须在 FrontendOpts 上覆盖；对 cl/gcc 驱动模式通用。
+class PchBuildAction : public GeneratePCHAction {
+ public:
+  explicit PchBuildAction(std::string out) : out_(std::move(out)) {}
+  bool BeginSourceFileAction(CompilerInstance &CI) override {
+    CI.getFrontendOpts().OutputFile = out_;
+    CI.getFrontendOpts().ProgramAction = frontend::GeneratePCH;
+    return GeneratePCHAction::BeginSourceFileAction(CI);
+  }
+
+ private:
+  std::string out_;
+};
+
+struct PchBuildFactory : FrontendActionFactory {
+  explicit PchBuildFactory(std::string out) : out_(std::move(out)) {}
+  std::unique_ptr<FrontendAction> create() override {
+    return std::make_unique<PchBuildAction>(out_);
+  }
+  std::string out_;
+};
+
 // 把单条条目写为临时 compile_commands.json，避免 loadFromFile 全量解析 1GB。
 // 不用 std::tmpnam：可预测文件名有竞态与符号链接攻击面（且 MSVC C4996），
 // 改用 temp 目录 + 进程 PID + 进程内序号构造唯一名。
@@ -610,6 +666,227 @@ std::string findResourceDir(const std::string &exePath, std::string *err) {
   return rd;
 }
 
+// ---------------- PCH 前置头缓存 ----------------
+// 目标：单文件 8s 级解析（vulkan/glm 等重模板头）降到秒级。缓存键 =
+// clang 版本 + resource-dir + 编译参数（条目原文）+ 指令层 preamble 文本，
+// 任一变化即换目录重建；布局 <compileJson>.logc-pch/<hash16>/：
+//   preamble.hpp     指令层 preamble（行号与源文件一致）
+//   preamble.hpp.pch 预编译头（tmp<pid> 构建后 rename 落位，原子）
+//   error            构建失败/无收益标记（同键不再重试）
+
+struct PchPaths {
+  std::string dir;         // <compileJson>.logc-pch/<hash>
+  std::string header;      // dir/preamble.hpp
+  std::string pch;         // dir/preamble.hpp.pch
+  std::string errorMarker; // dir/error
+};
+
+std::string readAllBytes(const std::string &path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) return {};
+  f.seekg(0, std::ios::end);
+  std::streamoff len = f.tellg();
+  if (len <= 0) return {};
+  std::string out(static_cast<size_t>(len), '\0');
+  f.seekg(0);
+  f.read(&out[0], len);
+  return f ? out : std::string();
+}
+
+PchPaths pchPathsFor(const std::string &compileJson, const std::string &entry,
+                      const std::string &rd, const std::string &preamble) {
+  std::string key;
+  key.reserve(256);
+  key += CLANG_VERSION_STRING;
+  key += '\x1f';
+  key += rd;
+  key += '\x1f';
+  key += entry;
+  key += '\x1f';
+  key += preamble;
+  char hash[32];
+  std::snprintf(hash, sizeof hash, "%016zx",
+                std::hash<std::string>{}(key));
+  PchPaths p;
+  p.dir = compileJson + ".logc-pch/" + hash;
+  p.header = p.dir + "/preamble.hpp";
+  p.pch = p.header + ".pch";
+  p.errorMarker = p.dir + "/error";
+  return p;
+}
+
+void writeErrorMarker(const PchPaths &p, const std::string &msg) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::create_directories(p.dir, ec);
+  if (std::FILE *f = std::fopen(p.errorMarker.c_str(), "wb")) {
+    std::fprintf(f, "%s\n", msg.c_str());
+    std::fclose(f);
+  }
+}
+
+// 目录下存在 tmp 构建文件即视为构建中（防止每次运行重复 detach）。
+bool pchBuildInFlight(const PchPaths &p) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (!fs::is_directory(p.dir, ec)) return false;
+  for (auto it = fs::directory_iterator(p.dir, ec);
+       !ec && it != fs::directory_iterator(); it.increment(ec)) {
+    if (it->path().filename().string().rfind("preamble.hpp.pch.tmp", 0) == 0)
+      return true;
+  }
+  return false;
+}
+
+// 清理同库其他哈希的陈旧缓存（best-effort；并发占用时失败留待下次）。
+void pruneStalePchDirs(const std::string &compileJson,
+                       const std::string &keepDir) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  for (auto it = fs::directory_iterator(compileJson + ".logc-pch", ec);
+       !ec && it != fs::directory_iterator(); it.increment(ec)) {
+    std::error_code ec2;
+    if (it->is_directory(ec2) && it->path() != fs::path(keepDir))
+      fs::remove_all(it->path(), ec2);
+  }
+}
+
+// 后台 detach 自调（--logc-internal-pch）构建 PCH：父进程不等待不阻塞，
+// 首次运行仍是全量解析，之后命中缓存。内部路径不写 stdout/stderr
+// （Unix fork 子进程共享父进程的流，输出会污染 CLI 的 JSON 协议）。
+void spawnDetachedPchBuild(const std::string &exePath, const CliArgs &args,
+                           const std::string &compileJson) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::path exe = fs::absolute(fs::path(exePath), ec);
+  fs::path file = fs::absolute(fs::path(args.file), ec);
+  fs::path cc = fs::absolute(fs::path(compileJson), ec);
+  if (ec || !fs::exists(exe, ec) || !fs::exists(file, ec)) return;
+#ifdef _WIN32
+  std::string e = exe.string();
+  _spawnl(_P_DETACH, e.c_str(), e.c_str(), "--logc-internal-pch", "--file",
+          file.string().c_str(), "--compile-commands", cc.string().c_str(),
+          (char *)nullptr);
+#else
+  pid_t pid = fork();
+  if (pid == 0) {
+    if (freopen("/dev/null", "w", stdout)) {}
+    if (freopen("/dev/null", "w", stderr)) {}
+    execl(exe.c_str(), exe.c_str(), "--logc-internal-pch", "--file",
+          file.c_str(), "--compile-commands", cc.c_str(), (char *)nullptr);
+    _exit(127);
+  }
+#endif
+}
+
+// ---------------- 编译参数统一清洗 ----------------
+// ClangTool adjuster 共用：剥源文件重复 token / 剥写文件类参数（unix+MSVC）/
+// 注 resource-dir / 按 cl.exe 路径注入 MSVC STL 与 Windows SDK include。
+// replaceSourceWith 非空时把保留的那份源文件 token 换掉（PCH 构建用：
+// 对同一套编译参数解析 preamble.hpp 而不是主源文件）。
+CommandLineArguments sanitizeCompileArgs(const CommandLineArguments &args,
+                                        StringRef filename,
+                                        const std::string &rd,
+                                        const std::string &replaceSourceWith) {
+  std::vector<std::string> vec(args.begin(), args.end());
+  std::string cur(filename.data(), filename.size());
+  auto cleaned = stripSourceFileArg(vec, cur);
+  if (!replaceSourceWith.empty()) {
+    std::string fn = cur, fbase;
+    for (auto &c : fn)
+      if (c == '\\') c = '/';
+    auto slash = fn.find_last_of('/');
+    fbase = slash == std::string::npos ? fn : fn.substr(slash + 1);
+    for (auto &a : cleaned) {
+      std::string na = a;
+      for (auto &c : na)
+        if (c == '\\') c = '/';
+      auto p = na.find_last_of('.');
+      if (p == std::string::npos) continue;
+      std::string ext = na.substr(p);
+      bool src = ext == ".c" || ext == ".cc" || ext == ".cpp" ||
+                 ext == ".cxx" || ext == ".C";
+      if (src && (na == fn || na.substr(na.find_last_of('/') + 1) == fbase)) {
+        a = replaceSourceWith;
+        break;
+      }
+    }
+  }
+  // 剥离写文件类参数：-MMD/-MD/-MG 与带值的 -MF/-MT/-MQ/-o/
+  // -serialize-diagnostic-file；MSVC 风格 /Fo /Fe /Fp /Yc /Yu /Yl（可带贴值
+  // 或分离值）。PCH 构建路径上 /Fo 派生的输出名会覆盖 PCH 目标，必须剥掉。
+  for (size_t i = 0; i < cleaned.size();) {
+    const std::string &a = cleaned[i];
+    if (a == "-MMD" || a == "-MD" || a == "-MG") {
+      cleaned.erase(cleaned.begin() + static_cast<long>(i));
+      continue;
+    }
+    if (a == "-MF" || a == "-MT" || a == "-MQ" || a == "-o" ||
+        a == "-serialize-diagnostic-file" || a == "/Fo" || a == "/Fe" ||
+        a == "/Fp" || a == "/Yc" || a == "/Yu" || a == "/Yl") {
+      if (i + 1 < cleaned.size() &&
+          cleaned[i + 1][0] != '-' && cleaned[i + 1][0] != '/') {
+        // 值是独立 token 且形如值（不是下一个选项）
+        if (a[0] == '-' || a == "/Fo" || a == "/Fe" || a == "/Fp" ||
+            a == "/Yc" || a == "/Yu" || a == "/Yl") {
+          cleaned.erase(cleaned.begin() + static_cast<long>(i),
+                        cleaned.begin() + static_cast<long>(i) + 2);
+          continue;
+        }
+      }
+      cleaned.erase(cleaned.begin() + static_cast<long>(i));
+      continue;
+    }
+    if (a.rfind("/Fo", 0) == 0 || a.rfind("/Fe", 0) == 0 ||
+        a.rfind("/Fp", 0) == 0 || a.rfind("/Yc", 0) == 0 ||
+        a.rfind("/Yu", 0) == 0 || a.rfind("/Yl", 0) == 0) {
+      cleaned.erase(cleaned.begin() + static_cast<long>(i));
+      continue;
+    }
+    ++i;
+  }
+  CommandLineArguments out(cleaned.begin(), cleaned.end());
+  if (!rd.empty()) out.push_back("-resource-dir=" + rd);
+  // 健壮化：MSVC(CMake) 的 compile_commands command 是 cl.exe / clang-cl。
+  // 从编译器路径推导它所属工具链的 include（MSVC STL + Windows SDK ucrt/shared/um），
+  // 注入 -isystem —— 不依赖环境 INCLUDE，和 clangd 依据编译器路径找头文件一致。
+  // 编译器在 PATH（如 build.bat 的 CC=cl.exe）时 compiler 为相对名，parent_path 为空，
+  // 目录存在性检查失败即跳过，安全。
+  if (!cleaned.empty()) {
+    namespace fs2 = std::filesystem;
+    std::string bc = fs2::path(cleaned[0]).filename().string();
+    std::string lower;
+    for (char c : bc) lower += (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+    if (lower == "cl.exe" || lower == "clang-cl.exe" || lower == "clang-cl") {
+      fs2::path cp(cleaned[0]);
+      fs2::path ver = cp.parent_path().parent_path().parent_path().parent_path();
+      fs2::path msvcInc = ver / "include";  // ...\MSVC\<ver>\include (MSVC STL)
+      std::error_code ec;
+      if (fs2::is_directory(msvcInc, ec)) {
+        // clang 处理 MSVC(CMake) command 时是 clang-cl 模式，只认 -imsvc / /external:I，
+        // 不认 -isystem（会被忽略）。用 -imsvc 表示 MSVC include。
+        out.push_back("-imsvc" + msvcInc.string());
+        fs2::path root = ver.parent_path().parent_path().parent_path();  // 工具链根
+        fs2::path kits = root / "Windows Kits" / "10" / "Include";
+        std::vector<fs2::path> sdkVers;
+        ec.clear();
+        for (auto it = fs2::directory_iterator(kits, ec);
+             !ec && it != fs2::directory_iterator(); it.increment(ec))
+          if (it->is_directory(ec)) sdkVers.push_back(it->path());
+        if (!sdkVers.empty()) {
+          std::sort(sdkVers.begin(), sdkVers.end());
+          fs2::path sdk = sdkVers.back();  // 取最新 SDK 版本
+          for (const char *sub : {"ucrt", "shared", "um"}) {
+            fs2::path d = sdk / sub;
+            if (fs2::is_directory(d, ec)) out.push_back("-imsvc" + d.string());
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 bool runClangEngine(const CliArgs &args, const std::string &compileJson,
@@ -631,6 +908,27 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
     if (err) *err = "file not found in compile_commands: " + args.file;
     return false;
   }
+  // ---- PCH 决策 ----
+  // 缓存命中 → 本次即加速（-Xclang -include-pch，对 cl/gcc 驱动模式通用）；
+  // 未命中且无失败标记/构建中标记 → 后台 detach 构建，下次命中。
+  // 哈希覆盖：clang 版本、resource-dir、编译参数原文、指令层 preamble。
+  // LOGC_DISABLE_PCH=1 跳过 PCH 决策（测试隔离 / 不想落缓存的场景）。
+  std::string rd = findResourceDir(exePath, err);
+  PchPaths pcp;
+  bool usePch = false;
+  if (!std::getenv("LOGC_DISABLE_PCH")) {
+    std::string preamble = extractPreamble(readAllBytes(args.file));
+    if (!preamble.empty()) {
+      namespace fs = std::filesystem;
+      pcp = pchPathsFor(compileJson, entry, rd, preamble);
+      std::error_code ec;
+      if (fs::exists(pcp.pch, ec)) {
+        usePch = true;
+      } else if (!fs::exists(pcp.errorMarker, ec) && !pchBuildInFlight(pcp)) {
+        spawnDetachedPchBuild(exePath, args, compileJson);
+      }
+    }
+  }
   std::string tmpDb = writeSingleEntryDb(entry);
   if (tmpDb.empty()) {
     if (err) *err = "cannot create temp compile db";
@@ -646,101 +944,151 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
     return false;
   }
   std::vector<std::string> sources = {args.file};
-  ClangTool tool(*db, sources);
   // 静态链接的 clang 无系统 resource-dir（编译期默认路径只在构建机上存在）。
   // 内置头（stddef.h 等）只从 <resource-dir>/include 查找，-isystem 对它们无效，
   // 因此 -resource-dir 必须指向直接包含 include/ 的版本目录（见 findResourceDir）。
-  {
-    namespace fs = std::filesystem;
-    std::string rd = findResourceDir(exePath, err);
+  auto runTool = [&](bool withPch) {
+    ClangTool tool(*db, sources);
     tool.appendArgumentsAdjuster(
-        [rd](const CommandLineArguments &args, StringRef filename) {
-          // MSVC(CMake) compile_commands 的 command 常自带源文件路径 + /Fo 输出参数，
-          // ClangTool 又会注入 --file 的源文件，导致"多个输入 + /Fo 单输出"冲突
-          // （cannot specify '/Fo' when compiling multiple source files）。
-          // 剥离 command 中与当前源文件重复的 token，只留编译选项。
-          std::vector<std::string> vec(args.begin(), args.end());
-          std::string cur(filename.data(), filename.size());
-          auto cleaned = stripSourceFileArg(vec, cur);
-          // 剥离写文件类参数（真实 monorepo 常见）：-MMD/-MD/-MF/-MT/-MQ/-o/
-          // -serialize-diagnostic-file 等。LibTooling 只做前端解析、不产出
-          // .o/.d，保留会让 clang 前端尝试写 obj/... 依赖文件（本机 obj 目录
-          // 往往不存在）而报错。只删参数本身与紧随的值，不动其余编译选项。
-          for (size_t i = 0; i < cleaned.size();) {
-            const std::string &a = cleaned[i];
-            if (a == "-MMD" || a == "-MD" || a == "-MG") {
-              cleaned.erase(cleaned.begin() + static_cast<long>(i));
-              continue;
-            }
-            if (a == "-MF" || a == "-MT" || a == "-MQ" || a == "-o" ||
-                a == "-serialize-diagnostic-file") {
-              if (i + 1 < cleaned.size())
-                cleaned.erase(cleaned.begin() + static_cast<long>(i),
-                              cleaned.begin() + static_cast<long>(i) + 2);
-              else
-                cleaned.erase(cleaned.begin() + static_cast<long>(i));
-              continue;
-            }
-            ++i;
+        [rd, withPch, &pcp](const CommandLineArguments &a, StringRef fn) {
+          auto out = sanitizeCompileArgs(a, fn, rd, "");
+          if (withPch) {
+            // cc1 级 -include-pch（ImplicitPCHInclude）：PCH 在 TU 开头装载，
+            // 主文件指令层重放（宏同值重定义、头文件 guard 跳过）语义等价。
+            out.push_back("-Xclang");
+            out.push_back("-include-pch");
+            out.push_back("-Xclang");
+            out.push_back(pcp.pch);
           }
-          CommandLineArguments out(cleaned.begin(), cleaned.end());
-          if (!rd.empty()) out.push_back("-resource-dir=" + rd);
-          // 健壮化：MSVC(CMake) 的 compile_commands command 是 cl.exe / clang-cl。
-          // 从编译器路径推导它所属工具链的 include（MSVC STL + Windows SDK ucrt/shared/um），
-          // 注入 -isystem —— 不依赖环境 INCLUDE，和 clangd 依据编译器路径找头文件一致。
-          // 编译器在 PATH（如 build.bat 的 CC=cl.exe）时 compiler 为相对名，parent_path 为空，
-          // 目录存在性检查失败即跳过，安全。
-          if (!cleaned.empty()) {
-            namespace fs2 = std::filesystem;
-            std::string bc = fs2::path(cleaned[0]).filename().string();
-            std::string lower;
-            for (char c : bc) lower += (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
-            if (lower == "cl.exe" || lower == "clang-cl.exe" || lower == "clang-cl") {
-              fs2::path cp(cleaned[0]);
-              fs2::path ver = cp.parent_path().parent_path().parent_path().parent_path();
-              fs2::path msvcInc = ver / "include";   // ...\MSVC\<ver>\include (MSVC STL)
-              std::error_code ec;
-              if (fs2::is_directory(msvcInc, ec)) {
-                // clang 处理 MSVC(CMake) command 时是 clang-cl 模式，只认 -imsvc / /external:I，
-                // 不认 -isystem（会被忽略）。用 -imsvc 表示 MSVC include。
-                out.push_back("-imsvc" + msvcInc.string());
-                fs2::path root = ver.parent_path().parent_path().parent_path(); // 工具链根
-                fs2::path kits = root / "Windows Kits" / "10" / "Include";
-                std::vector<fs2::path> sdkVers;
-                ec.clear();
-                for (auto it = fs2::directory_iterator(kits, ec);
-                     !ec && it != fs2::directory_iterator(); it.increment(ec))
-                  if (it->is_directory(ec)) sdkVers.push_back(it->path());
-                if (!sdkVers.empty()) {
-                  std::sort(sdkVers.begin(), sdkVers.end());
-                  fs2::path sdk = sdkVers.back();  // 取最新 SDK 版本
-                  for (const char *sub : {"ucrt", "shared", "um"}) {
-                    fs2::path d = sdk / sub;
-                    if (fs2::is_directory(d, ec)) out.push_back("-imsvc" + d.string());
-                  }
-                }
-              }
-            }
-          }
-          // 调试：LOGCOMMENTER_DEBUG=1 时打印实际 resource-dir 与内置头命中情况
           if (std::getenv("LOGCOMMENTER_DEBUG")) {
             std::error_code ec;
             std::string hdr = rd + "/include/stddef.h";
-            std::fprintf(stderr, "[logc] resource-dir=%s clang=%s stddef=%s\n",
+            std::fprintf(stderr,
+                         "[logc] resource-dir=%s clang=%s stddef=%s pch=%s\n",
                          rd.c_str(), CLANG_VERSION_STRING,
-                         fs::exists(hdr, ec) ? "yes" : "no");
-            out.push_back("-v");  // 打印 clang 实际 include 搜索路径（builtin + GCC）
+                         std::filesystem::exists(hdr, ec) ? "yes" : "no",
+                         withPch ? pcp.pch.c_str() : "(none)");
+            out.push_back("-v");  // 打印 clang 实际 include 搜索路径
           }
           return out;
         });
+    EngineFactory factory(args, edits, err);
+    return tool.run(&factory);
+  };
+  int rc = runTool(usePch);
+  if (rc != 0 && usePch) {
+    // PCH 与当前状态不符（依赖头被改、缓存损坏）：弃缓存，裸解析重试一次。
+    if (edits) edits->clear();
+    if (err) err->clear();
+    std::error_code ec;
+    std::filesystem::remove_all(pcp.dir, ec);
+    rc = runTool(false);
   }
-  EngineFactory factory(args, edits, err);
-  int rc = tool.run(&factory);
   std::remove(tmpDb.c_str());
   if (rc != 0 && err && err->empty()) {
     *err = "clang tool failed with code " + std::to_string(rc);
   }
   return rc == 0;
+}
+
+bool buildPchCache(const CliArgs &args, const std::string &compileJson,
+                   const std::string &exePath, std::string *err) {
+  (void)err;
+  if (args.file.empty() || compileJson.empty()) return false;
+  namespace fs = std::filesystem;
+  // 与 runClangEngine 相同的取参路径（复用 .logc-idx 索引缓存）
+  CompileIndex idx;
+  std::string cache = compileJson + ".logc-idx";
+  std::string ierr;
+  if (!idx.loadCache(cache, compileJson) || idx.isStale()) {
+    if (!idx.build(compileJson, &ierr)) return false;
+    idx.saveCache(cache);
+  }
+  std::string entry;
+  if (!idx.readEntry(args.file, &entry)) return false;
+  std::string rd = findResourceDir(exePath, nullptr);
+  std::string preamble = extractPreamble(readAllBytes(args.file));
+  PchPaths pcp = pchPathsFor(compileJson, entry, rd, preamble);
+  std::error_code ec;
+  if (fs::exists(pcp.pch, ec)) return true;  // 幂等
+  if (preamble.empty()) {
+    writeErrorMarker(pcp, "no include in preamble");
+    return true;
+  }
+  if (fs::exists(pcp.errorMarker, ec)) return true;  // 同键已失败，不重试
+  fs::create_directories(pcp.dir, ec);
+  // 1) 落盘 preamble（.hpp 后缀让驱动按 C++ 头推断语言，行号与源文件一致）
+  {
+    std::FILE *f = std::fopen(pcp.header.c_str(), "wb");
+    if (!f) return false;
+    std::fwrite(preamble.data(), 1, preamble.size(), f);
+    std::fclose(f);
+  }
+  // 2) 单条 db + ClangTool + GeneratePCHAction（clear 默认 adjuster 去掉
+  //    -fsyntax-only，PCH 必须能写输出）
+  std::string tmpDb = writeSingleEntryDb(entry);
+  if (tmpDb.empty()) return false;
+  std::string loadErr;
+  auto db = JSONCompilationDatabase::loadFromFile(tmpDb, loadErr,
+                                                  JSONCommandLineSyntax::AutoDetect);
+  if (!db) {
+    std::remove(tmpDb.c_str());
+    return false;
+  }
+  std::vector<std::string> sources = {args.file};
+  ClangTool tool(*db, sources);
+  tool.clearArgumentsAdjusters();
+  std::string tmpPch =
+      pcp.pch + ".tmp" + std::to_string(
+#ifdef _WIN32
+                             static_cast<unsigned>(_getpid())
+#else
+                             static_cast<unsigned>(getpid())
+#endif
+      );
+  tool.appendArgumentsAdjuster(
+      [rd, &pcp, tmpPch](const CommandLineArguments &a, StringRef fn) {
+        auto out = sanitizeCompileArgs(a, fn, rd, pcp.header);
+        if (std::getenv("LOGCOMMENTER_DEBUG")) {
+          std::fprintf(stderr, "[logc] pch-build args:");
+          for (auto &x : out) std::fprintf(stderr, " %s", x.c_str());
+          std::fprintf(stderr, "\n");
+        }
+        return out;
+      });
+  // 后台构建：诊断全静默（子进程共享父进程的流，不能打印）；失败经 error
+  // marker 文件沉淀。LOGCOMMENTER_DEBUG=1 时保留诊断便于排查。
+  IgnoringDiagConsumer diags;
+  if (!std::getenv("LOGCOMMENTER_DEBUG"))
+    tool.setDiagnosticConsumer(&diags);
+  PchBuildFactory factory(tmpPch);
+  int rc = tool.run(&factory);
+  if (std::getenv("LOGCOMMENTER_DEBUG")) {
+    std::fprintf(stderr, "[logc] pch-build rc=%d dir:", rc);
+    std::error_code ec2;
+    for (auto it = fs::directory_iterator(pcp.dir, ec2);
+         !ec2 && it != fs::directory_iterator(); it.increment(ec2))
+      std::fprintf(stderr, " %s(%lld)", it->path().filename().string().c_str(),
+                   (long long)fs::file_size(it->path(), ec2));
+    std::fprintf(stderr, "\n");
+  }
+  std::remove(tmpDb.c_str());
+  if (rc != 0) {
+    fs::remove(tmpPch, ec);
+    writeErrorMarker(pcp, "pch build failed rc=" + std::to_string(rc));
+    return false;
+  }
+  // 3) 原子落位：tmp<pid> rename 到最终名。并发构建时后到者 rename 失败，
+  //    以"最终名已存在"收敛为成功。
+  fs::rename(tmpPch, pcp.pch, ec);
+  if (ec && !fs::exists(pcp.pch, ec)) {
+    fs::remove(tmpPch, ec);
+    writeErrorMarker(pcp, "pch rename failed");
+    return false;
+  }
+  fs::remove(tmpPch, ec);  // rename 失败但目标已存在的残留
+  pruneStalePchDirs(compileJson, pcp.dir);
+  return true;
 }
 
 }  // namespace logc

@@ -97,6 +97,61 @@ TEST_CASE(index_cache_roundtrip) {
   cleanup(p);
 }
 
+TEST_CASE(index_cache_backslash_key_roundtrip) {
+  // 回归：saveCache 未对键做 JSON 转义时，反斜杠路径（Windows 常见）在缓存
+  // 往返后 key 被 loadCache 的转义解析吞掉 '\'，查找失败。
+  char buf[L_tmpnam];
+  const char *name = std::tmpnam(buf);
+  std::string p = name ? std::string(name) + ".json" : "/tmp/logc_bs.json";
+  std::ofstream f(p, std::ios::trunc);
+  f << "[\n"
+    << "  {\"directory\":\"C:\\\\proj\",\"file\":\"C:\\\\proj\\\\src\\\\main.cpp\","
+       "\"command\":\"cl -c main.cpp\"}\n"
+    << "]\n";
+  f.close();
+
+  CompileIndex idx;
+  std::string err;
+  EXPECT_TRUE(idx.build(p, &err));
+  EXPECT_TRUE(idx.saveCache(p + ".logc-idx"));
+
+  CompileIndex idx2;
+  EXPECT_TRUE(idx2.loadCache(p + ".logc-idx", p));
+  std::string entry;
+  EXPECT_TRUE(idx2.readEntry("C:\\proj\\src\\main.cpp", &entry));
+  EXPECT_CONTAINS(entry, "cl -c main.cpp");
+  EXPECT_FALSE(idx2.isStale());
+  cleanup(p);
+}
+
+TEST_CASE(index_cache_same_second_rewrite_stale) {
+  // 回归：mtime 只有秒级精度，同秒内重写 json（内容变短）时旧缓存必须靠
+  // size 变化判过期，否则按旧 offset 读到错误条目。
+  std::string p = makeFixture();
+  std::string cache = p + ".logc-idx";
+  CompileIndex idx;
+  std::string err;
+  EXPECT_TRUE(idx.build(p, &err));
+  EXPECT_TRUE(idx.saveCache(cache));
+
+  // 同秒重写：删掉一个条目（size 变小），不 sleep 跨秒
+  std::ofstream f(p, std::ios::trunc);
+  f << "[\n"
+    << "  {\"directory\":\"/proj\",\"file\":\"src/only.cpp\",\"command\":\"g++ -c only.cpp\"}\n"
+    << "]\n";
+  f.close();
+
+  CompileIndex idx2;
+  EXPECT_TRUE(idx2.loadCache(cache, p));
+  EXPECT_TRUE(idx2.isStale());
+  // 过期后重建，必须能查到新条目
+  CompileIndex idx3;
+  EXPECT_TRUE(idx3.build(p, &err));
+  std::string entry;
+  EXPECT_TRUE(idx3.readEntry("src/only.cpp", &entry));
+  cleanup(p);
+}
+
 TEST_CASE(index_read_normalized_abs_path) {
   // compile_commands 里的 file 带 "./" 等非规范化写法，readEntry 传规范绝对路径
   // 应通过 realpath 兜底命中（不依赖精确字符串匹配）。
