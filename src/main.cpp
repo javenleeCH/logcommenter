@@ -5,6 +5,7 @@
 
 #include "clang/engine_clang.h"
 #include "logengine/args.h"
+#include "logengine/file_apply.h"
 #include "logengine/text_edit.h"
 
 using namespace logc;
@@ -26,6 +27,9 @@ static void usage(const char *prog) {
       "  --friend                 注入：对象不可 << 且类型为用户可改类时，注入\n"
       "                            inline friend operator<<（改类所在头文件，\n"
       "                            需用户显式确认），观测输出改为流式\n"
+      "  --write                  把产出的 edit 直接改写到目标文件（含跨文件\n"
+      "                            friend 头文件）；stdout 仍输出 JSON 便于\n"
+      "                            校验，写失败时退出码 1\n"
       "  --compile-commands PATH  compile_commands.json 路径\n"
       "  --help                   帮助\n",
       prog, prog);
@@ -72,6 +76,15 @@ int main(int argc, const char **argv) {
   if (!runClangEngine(a, a.compileJson, argv[0], &edits, &err)) {
     std::fprintf(stderr, "error: %s\n", err.c_str());
     return 1;
+  }
+  // --write：直接把 edits 改写到目标文件（含跨文件 friend 头文件）。
+  // stdout 仍输出 JSON（协议不变量：调用方可校验/回放）；写失败退出码 1。
+  if (a.write) {
+    WriteResult wr = applyEditsToFiles(a.file, edits);
+    if (!wr.ok) {
+      std::fprintf(stderr, "error: --write: %s\n", wr.error.c_str());
+      return 1;
+    }
   }
   std::fputs(editsToJson(a.file, edits).c_str(), stdout);
   return 0;

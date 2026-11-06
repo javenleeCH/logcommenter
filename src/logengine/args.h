@@ -16,6 +16,7 @@ struct CliArgs {
   std::string compileJson;  // compile_commands.json 路径
   bool friend_ = false;     // inject 用：对象不可流式时注入 inline friend operator<<
                             // （改类所在头文件，需用户显式确认）
+  bool write = false;       // --write：edit 直接写入目标文件（含跨文件 friend 头文件）
   bool internalPch = false;  // 隐藏内部旗标 --logc-internal-pch：构建 PCH 缓存
                              // 后退出（由引擎后台 detach 自调用，非用户接口）
   bool help = false;

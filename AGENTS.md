@@ -32,7 +32,10 @@
 
 - 分层：VSCode 插件薄壳（选区/右键/applyEdit）→ 短生命周期 CLI（起→解析→返回→退出）
   → LogEngine。不 fork clangd、不常驻进程、不与 clangd 抢内存。
-- CLI 只输出 1-based JSON TextEdit、**不回写文件**；落地与否由调用方 applyEdit 决定。
+- CLI 默认只输出 1-based JSON TextEdit、不回写文件；落地与否由调用方 applyEdit 决定。
+  显式传 --write 时 CLI 才直接改写目标文件（含跨文件 friend 头文件），语义与
+  applyEdit 完全一致（1-based UTF-8 字节列、插入在 (line,col) 字符之前、CRLF/BOM
+  保持、多行文本按目标行尾风格真实换行），实现见 src/logengine/file_apply.{h,cpp}。
 - compile_commands 用偏移索引（`.logc-idx`）seek+read 单条取参，绝不整载 1GB；
   索引按 mtime 失效。
 - 幂等（产品要求）：`--comment` 天然跳过已注释语句；`--inject` 不得重复注入——

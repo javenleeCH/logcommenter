@@ -55,6 +55,23 @@ TEST_CASE(args_comment) {
   EXPECT_TRUE(a.error.empty());
 }
 
+TEST_CASE(args_write_flag) {
+  std::vector<const char *> v = {"prog", "--inject", "--file", "a.cpp",
+                                 "--var", "x", "--write",
+                                 "--compile-commands", "cc.json"};
+  auto a = parseVec(v);
+  EXPECT_TRUE(a.error.empty());
+  EXPECT_TRUE(a.write);
+}
+
+TEST_CASE(args_write_off_by_default) {
+  std::vector<const char *> v = {"prog", "--comment", "--file", "a.cpp",
+                                 "--compile-commands", "cc.json"};
+  auto a = parseVec(v);
+  EXPECT_TRUE(a.error.empty());
+  EXPECT_FALSE(a.write);
+}
+
 TEST_CASE(args_unknown_option) {
   std::vector<const char *> v = {"prog", "--bogus"};
   auto a = parseVec(v);
