@@ -48,17 +48,31 @@ function wordAt(editor: vscode.TextEditor, pos: vscode.Position): string {
 interface Target {
   name: string;
   pos: vscode.Position;
+  // 整行选区（整行文本 / 跨行）：不做标识符匹配，交给 CLI 的位置/整行兜底
+  lineOnly: boolean;
 }
 
-// 取注入目标：变量名 + 光标位置（VSCode Position）
+// 取注入目标：变量名 + 光标位置（VSCode Position）。
+// 语义：有位置时以位置为准（CLI 收到 --position 后按 AST 节点范围过滤），
+// --var 仅作无位置时的名字回退；选中整行时 name 为空，走整行兜底而不是报错。
 function resolveTarget(editor: vscode.TextEditor): Target {
   const sel = editor.selection;
-  if (!sel.isEmpty && sel.start.line === sel.end.line) {
-    const name = editor.document.getText(sel).trim();
-    return { name, pos: sel.start };
+  const doc = editor.document;
+  if (!sel.isEmpty) {
+    if (sel.start.line === sel.end.line) {
+      const selected = doc.getText(sel).trim();
+      const lineText = doc.lineAt(sel.start.line).text.trim();
+      // 整行选区（三击 / 从行首到行尾）→ 整行模式
+      if (selected === lineText) {
+        return { name: '', pos: sel.start, lineOnly: true };
+      }
+      return { name: selected, pos: sel.start, lineOnly: false };
+    }
+    // 跨行选区：以起点行整行兜底
+    return { name: '', pos: sel.start, lineOnly: true };
   }
-  const pos = sel.isEmpty ? sel.active : sel.start;
-  return { name: wordAt(editor, pos), pos };
+  const pos = sel.active;
+  return { name: wordAt(editor, pos), pos, lineOnly: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -115,8 +129,14 @@ async function resolveCompileCommands(
     ' 向上探测；可设置 logcommenter.compileCommands 指定）');
 }
 
-function runCli(args: string[]): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+interface CliResult {
+  stdout: string;
+  // 成功路径上的 stderr = CLI 的降级提示（如编译参数缺失）；错误路径已在 reject
+  stderr: string;
+}
+
+function runCli(args: string[]): Promise<CliResult> {
+  return new Promise<CliResult>((resolve, reject) => {
     const { bin, configuredPath } = resolveCli(rootDir());
     // 配置了具体路径：前置存在性检查，避免 spawn ENOENT 的英文晦涩报错
     if (configuredPath && !fs.existsSync(configuredPath)) {
@@ -145,7 +165,7 @@ function runCli(args: string[]): Promise<string> {
         const msg = (stderr || '').trim();
         return reject(new Error(msg ? msg.split('\n')[0] : err.message));
       }
-      resolve(stdout);
+      resolve({ stdout, stderr });
     });
   });
 }
@@ -185,10 +205,11 @@ async function applyEdits(groups: EditGroup[]): Promise<{ ok: boolean; count: nu
 async function inject(withFriend: boolean): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return void vscode.window.showErrorMessage('LogCommenter: 请先打开文件');
-  const { name, pos } = resolveTarget(editor);
-  if (!name) {
+  const { name, pos, lineOnly } = resolveTarget(editor);
+  if (!name && !lineOnly) {
     return void vscode.window.showErrorMessage(
-      'LogCommenter: 未选中变量，或光标不在标识符上（C++ 标识符仅含字母/数字/下划线）');
+      'LogCommenter: 未选中变量，或光标不在标识符上（C++ 标识符仅含字母/数字/下划线）；' +
+      '也可选中整行做整行注入');
   }
   if (withFriend) {
     const ok = await vscode.window.showWarningMessage(
@@ -199,16 +220,23 @@ async function inject(withFriend: boolean): Promise<void> {
   try {
     const cc = await resolveCompileCommands(context(), path.dirname(editor.document.uri.fsPath));
     const lineText = editor.document.lineAt(pos.line).text;
-    const args = [
-      '--inject',
-      '--file', editor.document.uri.fsPath,
-      '--var', name,
+    // --position 始终传（有位置时 CLI 以位置为准）；--var 仅在拿到标识符时传，
+    // 整行选区不传，直接走 CLI 的整行兜底。
+    const args = ['--inject', '--file', editor.document.uri.fsPath];
+    if (name) args.push('--var', name);
+    args.push(
       '--position', (pos.line + 1) + ':' + utf16ColToByte(lineText, pos.character),
       '--compile-commands', cc
-    ];
+    );
     if (withFriend) args.push('--friend');
-    const out = await runCli(args);
-    const groups = normalizeGroups(out);
+    const { stdout, stderr } = await runCli(args);
+    // 降级提示（CLI 的 warning：如编译参数缺失，已产出模板日志）
+    const warn = stderr.trim();
+    if (warn) {
+      channel?.appendLine('[warn] ' + warn);
+      void vscode.window.showWarningMessage('LogCommenter: ' + warn.split('\n')[0]);
+    }
+    const groups = normalizeGroups(stdout);
     const { ok: applied, count } = await applyEdits(groups);
     if (!applied) return void vscode.window.showErrorMessage('LogCommenter: applyEdit 失败');
     const files = groups.map(g => path.basename(g.file)).join(', ');
@@ -230,8 +258,13 @@ async function comment(): Promise<void> {
       '--file', editor.document.uri.fsPath,
       '--compile-commands', cc
     ];
-    const out = await runCli(args);
-    const groups = normalizeGroups(out);
+    const { stdout, stderr } = await runCli(args);
+    const warn = stderr.trim();
+    if (warn) {
+      channel?.appendLine('[warn] ' + warn);
+      void vscode.window.showWarningMessage('LogCommenter: ' + warn.split('\n')[0]);
+    }
+    const groups = normalizeGroups(stdout);
     const { ok: applied, count } = await applyEdits(groups);
     if (!applied) return void vscode.window.showErrorMessage('LogCommenter: applyEdit 失败');
     channel?.appendLine('-> 已注释 ' + count + ' 处日志');

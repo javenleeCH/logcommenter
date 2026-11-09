@@ -72,11 +72,13 @@ int main(int argc, const char **argv) {
   }
 
   std::vector<TextEdit> edits;
-  std::string err;
-  if (!runClangEngine(a, a.compileJson, argv[0], &edits, &err)) {
+  std::string err, warn;
+  if (!runClangEngine(a, a.compileJson, argv[0], &edits, &err, &warn)) {
     std::fprintf(stderr, "error: %s\n", err.c_str());
     return 1;
   }
+  // 降级提示（规划 §6.1：编译参数缺失时仍产出模板日志，但不静默）
+  if (!warn.empty()) std::fprintf(stderr, "warning: %s\n", warn.c_str());
   // --write：直接把 edits 改写到目标文件（含跨文件 friend 头文件）。
   // stdout 仍输出 JSON（协议不变量：调用方可校验/回放）；写失败退出码 1。
   if (a.write) {

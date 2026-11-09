@@ -280,6 +280,33 @@ TEST_CASE(index_read_relative_file_via_directory) {
   fs::remove_all(base);
 }
 
+TEST_CASE(index_streaming_chunk_boundary) {
+  // 回归：build() 必须分块流式扫描（内存与文件大小解耦），跨 256KB 块边界的
+  // 条目/键/值仍要正确解析，偏移记录也要准确（readEntry 能取回原文）。
+  std::string p = tmpDir() + "/logc_big_db.json";
+  {
+    std::string pad(300 * 1024, 'x');  // 让第二个条目跨过默认块边界
+    std::ofstream f(p, std::ios::trunc);
+    f << "[\n"
+      << "  {\"directory\":\"/proj\",\"file\":\"src/a.cpp\",\"command\":\"g++ -c a.cpp\"},\n"
+      << "  {\"directory\":\"/proj\",\"file\":\"src/b.cpp\",\"command\":\"g++ -c b.cpp "
+      << pad << "\"},\n"
+      << "  {\"directory\":\"/proj\",\"file\":\"src/c.cpp\",\"command\":\"g++ -c c.cpp\"}\n"
+      << "]\n";
+  }
+  CompileIndex idx;
+  std::string err;
+  EXPECT_TRUE(idx.build(p, &err));
+  EXPECT_EQ(idx.size(), 3u);
+  std::string entry;
+  EXPECT_TRUE(idx.readEntry("src/b.cpp", &entry));
+  EXPECT_CONTAINS(entry, "g++ -c b.cpp");
+  EXPECT_TRUE(idx.readEntry("src/c.cpp", &entry));
+  EXPECT_CONTAINS(entry, "c.cpp");
+  std::remove(p.c_str());
+  std::remove((p + ".logc-idx").c_str());
+}
+
 TEST_CASE(index_cache_v1_rejected) {
   // 旧版缓存（无 #logc-idx-v2 首行标记）应被拒绝，由调用方重建。
   std::string p = makeFixture();

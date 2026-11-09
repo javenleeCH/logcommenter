@@ -101,6 +101,16 @@ def main():
         fail("friend obs not streamable: %s" % ot)
     if "operator<<" not in ft or "friend" not in ft:
         fail("friend text missing: %s" % ft)
+    # 拍板方案：头文件只放 friend **声明**（无函数体、非 inline）；函数定义
+    # 非 inline、放主文件 .cpp，且函数体读取并打印私有成员值（_v.level）。
+    ftxt = " ".join(e["text"] for e in fr_edits)
+    if "friend std::ostream& operator<<(std::ostream& _os, const Gadget& _v);" not in ftxt:
+        fail("friend decl shape wrong (expect declaration ending ';'): %s" % ftxt)
+    if "{" in ftxt or "inline" in ftxt:
+        fail("friend decl must not be an inline definition: %s" % ftxt)
+    otxt = " ".join(e["text"] for e in obs_edits)
+    if "_v.level" not in otxt or "inline" in otxt:
+        fail("friend definition should be non-inline and read private member: %s" % otxt)
 
     # C) apply（头文件副本换名 + cpp 副本改 include）→ 编译验证
     hdr_e2e = os.path.join(e2e_dir, "friend_widget_e2e.h")
@@ -166,6 +176,20 @@ def main():
                       "--compile-commands", cc_noise])
     if isinstance(d_pos, list) or len(d_pos["edits"]) != 1:
         fail("noise: --position should yield exactly 1 edit: %s" % json.dumps(d_pos))
+    # 插件同时传 --var + --position：位置必须优先于名字（否则同名声明会被
+    # 全文件注入；头文件里的 imageCount 行号与主文件撞号）。
+    d_pos_var = run(exe, ["--inject", "--file", noise_src, "--var",
+                          "imageCount", "--position", "11:14",
+                          "--compile-commands", cc_noise])
+    if isinstance(d_pos_var, list) or len(d_pos_var["edits"]) != 1:
+        fail("position must win over --var: %s" % json.dumps(d_pos_var))
+
+    # 整行选区（插件会把整行文本当 --var 传）：匹配为空时走整行兜底而非报错。
+    d_line = run(exe, ["--inject", "--file", src, "--var", "  Gadget g;",
+                       "--position", "11:1", "--compile-commands", cc_path])
+    if isinstance(d_line, list) or "[obs] line 11" not in json.dumps(d_line):
+        fail("whole-line selection should fall back to line marker: %s" %
+             json.dumps(d_line))
 
     # H) PCH 缓存：同步构建（--logc-internal-pch）→ 命中缓存的运行必须与
     #    裸解析产出完全一致的 JSON（等价性），且缓存目录只留当前哈希。
@@ -190,6 +214,25 @@ def main():
         fail("pch: warm output differs from bare parse: %s vs %s" %
              (json.dumps(d_warm), json.dumps(d_var)))
     clean(cc_noise)
+
+    # I) 编译参数缺失降级（规划 §6.1）：查不到条目不得报错退出；仍产出模板
+    #    日志（无 AST，地址形式保证可编译）并在 stderr 给出提示。
+    cc_missing = os.path.join(e2e_dir, "cc_missing.json")
+    with open(cc_missing, "w", encoding="utf-8") as f:
+        json.dump([{"file": hdr, "directory": e2e_dir,
+                    "command": "clang++ -std=c++17 -fsyntax-only %s" % hdr}], f)
+    r = subprocess.run([exe, "--inject", "--file", src, "--var", "g",
+                        "--compile-commands", cc_missing],
+                       capture_output=True, text=True,
+                       env=dict(os.environ, LOGC_DISABLE_PCH="1"))
+    if r.returncode != 0:
+        fail("missing compile entry must degrade, not fail: %s" % r.stderr)
+    if "降级" not in r.stderr:
+        fail("missing compile entry must warn: %s" % r.stderr)
+    dt = json.dumps(json.loads(r.stdout))
+    if "[obs] g" not in dt or "(ptr)" not in dt:
+        fail("degraded template log missing: %s" % dt)
+    clean(cc_missing)
 
     clean(hdr_e2e, applied, cc_path, applied_cc)
     print("E2E B-group (lookup/friend/multi-file/idempotent/fallback) OK")

@@ -31,160 +31,161 @@ struct FileEntry {
   size_t dirLen = 0;
 };
 
-// 从 ':' 后第一个引号开始读取 JSON 字符串字面量，正确处理 \" \\ 等转义。
-// 返回读取结束位置（闭合引号位置），失败返回 npos。
-bool readJsonString(const std::string &data, size_t pos, size_t limit,
-                    std::string *out, size_t *closePos) {
-  size_t j = pos;
-  while (j < limit && (data[j] == ' ' || data[j] == '\t' ||
-                       data[j] == '\r' || data[j] == '\n')) {
-    ++j;
-  }
-  if (j >= limit || data[j] != '"') return false;
-  ++j;
-  std::string s;
-  bool esc = false;
-  while (j < limit) {
-    char c = data[j];
-    if (esc) {
-      // JSON 转义还原：Windows 路径/命令里的反斜杠、转义引号需要原样保留
-      if (c == 'n') s += '\n';
-      else if (c == 't') s += '\t';
-      else if (c == 'r') s += '\r';
-      else s += c;  // \" \\ \/ 等原样保留后续字符
-      esc = false;
-    } else if (c == '\\') {
-      esc = true;
-    } else if (c == '"') {
-      *out = std::move(s);
-      if (closePos) *closePos = j;
-      return true;
-    } else {
-      s += c;
-    }
-    ++j;
-  }
-  return false;
-}
-
+// 流式扫描 compile_commands.json：分块读取，内存占用 = 固定缓冲区 + 当前
+// 条目的 file 路径/键（与文件大小无关）。规划 §3.2 要求“一次性流式扫描 1GB，
+// 只记录偏移，内存可忽略”，因此绝不允许把整份文件读进内存再扫描。
+//
 // 正向扫描：compile_commands.json 是一个顶层数组 [ {..}, {..} ]，
-// 每个条目是一个无嵌套对象（键均为 directory/command/file/output 等字符串）。
+// 每个条目是无嵌套对象（键均为 directory/command/file/output 等字符串）。
 // 严格按“引号状态 + 转义 + 括号深度”单向扫描，定位每个顶层对象的 [start,end]，
-// 再在区间内提取 \"file\" 值。
+// 同时在条目内捕获 "file" 值（反转义后的路径）与 "directory" 值原文区间。
 //
 // 必须正向（不能反向找 '{'）：Windows 的 MSVC 命令以转义引号开头，例如
 //   "command": "\"C:\\Program Files\\...\\cl.exe\" ..."
 // 反向扫描无法可靠配对 '\\' 与 '\"'，会把字符串真正的开引号误判为转义引号、
 // 造成括号错位而丢条目。正向转义处理则没有该问题。
-std::vector<FileEntry> scanEntries(const std::string &data) {
-  std::vector<FileEntry> out;
-  const size_t n = data.size();
-  bool in_str = false, esc = false;
-  int depth = 0;
-  size_t start = std::string::npos;
+//
+// 键识别：字符串外记录最近一个非空白字符 prevSig；在条目层（depth==1）：
+//   '{' 或 ',' 之后的字符串是键；':' 之后的字符串是值。
+// 值只捕获 "file"（路径，需反转义）与 "directory"（只记原文偏移，按需读取）。
+constexpr size_t kChunkBytes = 256 * 1024;
 
-  for (size_t i = 0; i < n; ++i) {
-    char c = data[i];
-    if (in_str) {
-      if (esc) {
-        esc = false;
-      } else if (c == '\\') {
-        esc = true;
-      } else if (c == '"') {
-        in_str = false;
-      }
-      continue;
-    }
-    if (c == '"') {
-      in_str = true;
-    } else if (c == '{') {
-      if (depth == 0) start = i;
-      ++depth;
-    } else if (c == '}') {
-      if (depth > 0) {
-        --depth;
-        if (depth == 0 && start != std::string::npos) {
-          // 在 [start, i] 区间内提取 \"file\" 字符串
-          size_t hit = data.find("\"file\"", start + 1);
-          if (hit != std::string::npos && hit < i) {
-            size_t k = hit + 6;
-            while (k < i && (data[k] == ' ' || data[k] == '\t' ||
-                             data[k] == '\r' || data[k] == '\n')) {
-              ++k;
-            }
-            std::string path;
-            if (k < i && data[k] == ':') {
-              size_t closePos;
-              if (readJsonString(data, k + 1, i, &path, &closePos)) {
-                FileEntry fe;
-                fe.start = start;
-                fe.end = i;
-                fe.path = std::move(path);
-                // 提取 "directory" 值内容区间（原文、未反转义；dirLen=0 表示缺失）。
-                // 键在条目内只出现一次，与 file 的相对顺序无关。
-                size_t dhit = data.find("\"directory\"", start + 1);
-                if (dhit != std::string::npos && dhit < i) {
-                  size_t dk = dhit + 11;  // 键 "directory" 长度（含引号）
-                  while (dk < i && (data[dk] == ' ' || data[dk] == '\t' ||
-                                    data[dk] == '\r' || data[dk] == '\n')) {
-                    ++dk;
-                  }
-                  if (dk < i && data[dk] == ':') {
-                    size_t dj = dk + 1;
-                    while (dj < i && (data[dj] == ' ' || data[dj] == '\t' ||
-                                      data[dj] == '\r' || data[dj] == '\n')) {
-                      ++dj;
-                    }
-                    if (dj < i && data[dj] == '"') {
-                      size_t cs = dj + 1;  // 内容起始（开引号之后）
-                      size_t e = cs;
-                      bool esc = false;
-                      while (e < i) {
-                        char c = data[e];
-                        if (esc) {
-                          esc = false;
-                        } else if (c == '\\') {
-                          esc = true;
-                        } else if (c == '"') {
-                          break;
-                        }
-                        ++e;
-                      }
-                      if (e < i && e > cs) {
-                        fe.dirOff = cs;
-                        fe.dirLen = e - cs;
-                      }
-                    }
-                  }
-                }
-                out.push_back(std::move(fe));
-              }
-            }
-          }
-          start = std::string::npos;
-        }
-      }
-    }
-  }
-  return out;
-}
-
-bool readFileBytes(const std::string &path, std::string *data,
-                   std::string *err) {
-  std::ifstream f(path, std::ios::binary | std::ios::ate);
+bool scanEntries(const std::string &path, std::vector<FileEntry> *out,
+                 std::string *err) {
+  std::ifstream f(path, std::ios::binary);
   if (!f) {
     if (err) *err = "cannot open: " + path;
     return false;
   }
-  std::streamsize sz = f.tellg();
-  if (sz < 0) {
-    if (err) *err = "cannot stat: " + path;
+
+  std::vector<char> buf(kChunkBytes);
+  size_t base = 0;  // 当前块首字节的全局偏移
+
+  bool in_str = false, esc = false;
+  int depth = 0;
+  char prev_sig = 0;  // 字符串外最近一个非空白字符
+  size_t entry_start = 0;
+  bool has_file = false;
+  std::size_t dir_off = 0, dir_len = 0;
+  std::string file_path, file_buf, pending_key, key_buf;
+  bool capturing_key = false;
+
+  // 值捕获状态：file 需累积反转义内容；directory 只记原文区间。
+  enum Cap { kNone, kFile, kDir } cap = kNone;
+  size_t val_start = 0;
+
+  auto resetEntry = [&]() {
+    has_file = false;
+    dir_off = dir_len = 0;
+    file_path.clear();
+    file_buf.clear();
+    pending_key.clear();
+    key_buf.clear();
+    capturing_key = false;
+    cap = kNone;
+  };
+
+  for (;;) {
+    f.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+    std::streamsize got = f.gcount();
+    if (got <= 0) break;
+    for (std::streamsize k = 0; k < got; ++k) {
+      char c = buf[static_cast<size_t>(k)];
+      const size_t abs = base + static_cast<size_t>(k);
+      if (in_str) {
+        if (esc) {
+          esc = false;
+          if (cap == kFile) {
+            // JSON 转义还原：Windows 路径/命令里的反斜杠、转义引号需要原样保留
+            if (c == 'n') file_buf += '\n';
+            else if (c == 't') file_buf += '\t';
+            else if (c == 'r') file_buf += '\r';
+            else file_buf += c;  // \" \\ \/ 等原样保留后续字符
+          }
+        } else if (c == '\\') {
+          esc = true;
+        } else if (c == '"') {
+          in_str = false;
+          prev_sig = '"';
+          if (capturing_key) {
+            pending_key = std::move(key_buf);
+            key_buf.clear();
+            capturing_key = false;
+          } else if (cap == kFile) {
+            file_path = std::move(file_buf);
+            file_buf.clear();
+            has_file = true;
+            cap = kNone;
+          } else if (cap == kDir) {
+            dir_off = val_start;
+            dir_len = abs - val_start;  // 原文长度（转义序列按原样计数）
+            cap = kNone;
+          }
+        } else if (capturing_key) {
+          key_buf += c;
+        } else if (cap == kFile) {
+          file_buf += c;
+        }
+        continue;
+      }
+      // ---- 字符串外 ----
+      if (c == '"') {
+        in_str = true;
+        esc = false;
+        if (depth == 1 && prev_sig == ':') {
+          if (pending_key == "file") {
+            cap = kFile;
+            val_start = abs + 1;
+            file_buf.clear();
+          } else if (pending_key == "directory") {
+            cap = kDir;
+            val_start = abs + 1;
+          } else {
+            cap = kNone;
+          }
+          capturing_key = false;
+        } else if (depth == 1 && (prev_sig == '{' || prev_sig == ',')) {
+          capturing_key = true;
+          cap = kNone;
+          key_buf.clear();
+        } else {
+          capturing_key = false;
+          cap = kNone;
+        }
+        prev_sig = '"';
+        continue;
+      }
+      if (c == '{') {
+        if (depth == 0) {
+          entry_start = abs;
+          resetEntry();
+        }
+        ++depth;
+        prev_sig = '{';
+      } else if (c == '}') {
+        if (depth > 0) {
+          --depth;
+          if (depth == 0 && has_file) {
+            // 条目区间含闭合 '}'（build 里 length = end - start + 1）
+            out->push_back(FileEntry{entry_start, abs, std::move(file_path),
+                                     dir_off, dir_len});
+            resetEntry();
+          }
+        }
+        prev_sig = '}';
+      } else if (!std::isspace(static_cast<unsigned char>(c))) {
+        prev_sig = c;
+      }
+    }
+    base += static_cast<size_t>(got);
+    // 短读即到文件尾；恰好整块时下一轮 gcount==0 退出。
+    if (got < static_cast<std::streamsize>(buf.size())) break;
+  }
+  if (f.bad()) {
+    if (err) *err = "read failed: " + path;
     return false;
   }
-  data->resize(static_cast<size_t>(sz));
-  f.seekg(0, std::ios::beg);
-  f.read(&(*data)[0], sz);
-  return f.good();
+  return true;
 }
 
 // 把路径分隔符统一为 '/'，便于跨平台比较：
@@ -268,8 +269,9 @@ std::string unescapeJson(const std::string &s) {
 }  // namespace
 
 bool CompileIndex::build(const std::string &jsonPath, std::string *err) {
-  std::string data;
-  if (!readFileBytes(jsonPath, &data, err)) return false;
+  // 分块流式扫描：不把整份文件读进内存（首次建索引内存峰值与文件大小解耦）
+  std::vector<FileEntry> entries;
+  if (!scanEntries(jsonPath, &entries, err)) return false;
 
   // 记录 mtime + size（isStale 双检：mtime 秒级精度下同秒重写靠 size 兜住）
   struct stat st;
@@ -279,7 +281,6 @@ bool CompileIndex::build(const std::string &jsonPath, std::string *err) {
   }
 
   idx_.clear();
-  auto entries = scanEntries(data);
   for (auto &e : entries) {
     idx_[e.path] = {e.start, e.end - e.start + 1, e.dirOff, e.dirLen};
   }

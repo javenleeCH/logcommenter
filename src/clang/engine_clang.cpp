@@ -2,6 +2,7 @@
 #include "engine_clang.h"
 
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -31,6 +32,7 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Version.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
@@ -62,6 +64,17 @@ std::string lineIndentAt(const SourceManager &SM, SourceLocation loc) {
     else break;
   }
   return ind;
+}
+
+// 把任意文本安全嵌入 C++ 字符串字面量（类型名可能含 '\' 或 '"'）。
+std::string cStringLiteralBody(const std::string &s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (char c : s) {
+    if (c == '\\' || c == '"') out += '\\';
+    out += c;
+  }
+  return out;
 }
 
 // 从某条语句向上找最近的 enclosing FunctionDecl（全局变量观测点定位）。
@@ -97,6 +110,8 @@ bool textHasMarker(const char *data, const std::string &marker) {
 struct Collector {
   std::vector<std::pair<SourceLocation, std::string>> inserts;
   std::vector<std::pair<SourceLocation, std::string>> friendInserts;
+  // friend 函数定义（非 inline，放主文件 .cpp 末尾；与类内 friend 声明配对）
+  std::vector<std::string> friendDefs;
 };
 
 class Observer : public MatchFinder::MatchCallback {
@@ -120,6 +135,9 @@ class Observer : public MatchFinder::MatchCallback {
   const CliArgs &args_;
   Collector *col_;
   std::set<const VarDecl *> seen_;  // 已注入变量（canonical decl），position 模式去重
+  // 已注入 friend 声明的类（canonical decl）：同一类多个变量只声明/定义一次，
+  // 否则会生成重复函数定义（重定义错误）。
+  std::set<const Decl *> friended_;
   std::set<unsigned> commentedLines_;  // 已注释行号（同一行多条日志只插一份 "// "）
   std::vector<const FunctionDecl *> shiftOps_;  // TU 内可见的 operator<< 声明
 
@@ -184,15 +202,46 @@ class Observer : public MatchFinder::MatchCallback {
     return false;
   }
 
-  // 生成 inline friend operator<< 定义（MVP：打印类型名 + 对象地址）。
-  // 类名取自定义处；非模板、有完整定义的 Record 才支持。
-  static std::string friendShiftText(const std::string &tname,
-                                     const std::string &indent) {
-    std::string in = indent + "  ";
+  // 类内 friend **声明**（规划 §4.1 已拍板方案：声明进类定义、函数定义放 .cpp
+  // 且非 inline）。类名取自定义处；非模板、有完整定义的 Record 才支持。
+  static std::string friendDeclText(const std::string &tname,
+                                    const std::string &indent) {
     return "\n" + indent + "  friend std::ostream& operator<<(std::ostream& _os, const " +
-           tname + "& _v) {\n" + in + "    _os << \"(" + tname +
-           "@\" << static_cast<const void*>(&_v) << \")\";\n" + in +
-           "    return _os;\n" + indent + "  }\n" + indent;
+           tname + "& _v);\n" + indent;
+  }
+
+  // 非 inline friend 函数**定义**（追加到主文件 .cpp 末尾），函数体读取并
+  // 打印该对象的私有成员值：可流式成员直接取值；其余（容器/自定义不可流式
+  // 类型）回退为地址 + 类型名，保证生成代码总能编译。
+  std::string friendDefText(ASTContext &Ctx, const RecordDecl *RD) const {
+    const std::string tname = RD->getNameAsString();
+    std::string rhs = "\"" + cStringLiteralBody(tname) + "{\"";
+    bool any = false;
+    for (const FieldDecl *FD : RD->fields()) {
+      const std::string fname = FD->getNameAsString();
+      if (fname.empty()) continue;  // 匿名结构/联合成员：无稳定名字，跳过
+      const QualType ft = FD->getType();
+      const std::string expr = "_v." + fname;
+      ObsFormat fmt = formatForType(ft.getAsString(), expr);
+      if (!fmt.streamable && isStreamableViaOperator(Ctx, ft)) {
+        fmt.streamable = true;
+        fmt.expr = expr;
+      }
+      // 不可流式的位域成员取不了地址（&_v.bitfield 非法），跳过该成员
+      if (!fmt.streamable && FD->isBitField()) continue;
+      if (any) rhs += " << \", \"";
+      any = true;
+      if (fmt.streamable) {
+        rhs += " << \"" + cStringLiteralBody(fname) + "=\" << " + fmt.expr;
+      } else {
+        rhs += " << \"" + cStringLiteralBody(fname) + "(" +
+               cStringLiteralBody(ft.getAsString()) + ")@\" << (const void*)&" +
+               expr;
+      }
+    }
+    rhs += " << \"}\"";
+    return "std::ostream& operator<<(std::ostream& _os, const " + tname +
+           "& _v) {\n  _os << " + rhs + ";\n  return _os;\n}\n";
   }
 
   // ---- --comment ----
@@ -290,10 +339,13 @@ class Observer : public MatchFinder::MatchCallback {
       fmt.streamable = true;
       fmt.expr = var;
     }
-    // friend 注入（需用户显式 --friend）：对象不可流式且类型为用户可改的
-    // 非模板类（有完整定义）时，在类 '}' 前注入 inline friend operator<<，
-    // 观测表达式改为流式。改的是类所在头文件（跨文件 TextEdit），有副作用，
-    // 故必须显式确认。类内已有 operator<<（friend 或成员）时跳过（幂等）。
+    // friend 注入（需用户显式 --friend；规划 §4.1 已拍板方案）：对象不可流式
+    // 且类型为用户可改的非模板类（有完整定义）时——类内注入 friend **声明**，
+    // 非 inline 函数**定义**追加到主文件 .cpp 末尾（函数体打印私有成员值），
+    // 观测表达式改为流式。
+    // 不向第三方/系统头注入：只有 C_User（用户源码/头文件）才走 friend；
+    // -isystem 及系统目录头（特征 C_System/C_ExternCSystem）一律跳过，回退地址兜底。
+    // 类内已有 operator<<（friend 或成员）时跳过（幂等）。
     if (!fmt.streamable && args_.friend_) {
       QualType qt = VD->getType().getNonReferenceType().getUnqualifiedType();
       const auto *RT = qt->getAs<RecordType>();
@@ -302,11 +354,17 @@ class Observer : public MatchFinder::MatchCallback {
           !isTemplatedRecord(RD) && !recordHasStreamOperator(RD)) {
         SourceLocation be = RD->getBraceRange().getEnd();
         SourceManager &SM = res.Context->getSourceManager();
-        std::string indent = lineIndentAt(SM, be);
-        col_->friendInserts.push_back(
-            {be, friendShiftText(RD->getNameAsString(), indent)});
-        fmt.streamable = true;
-        fmt.expr = var;  // 与 operator<< 实查分支一致：观测行 << 表达式必须是变量
+        if (!SM.isInSystemHeader(be) &&
+            SM.getFileCharacteristic(be) == SrcMgr::C_User) {
+          if (friended_.insert(RD->getCanonicalDecl()).second) {
+            std::string indent = lineIndentAt(SM, be);
+            col_->friendInserts.push_back(
+                {be, friendDeclText(RD->getNameAsString(), indent)});
+            col_->friendDefs.push_back(friendDefText(*res.Context, RD));
+          }
+          fmt.streamable = true;
+          fmt.expr = var;  // 与 operator<< 实查分支一致：观测行 << 表达式必须是变量
+        }
       }
     }
     std::string line;
@@ -316,9 +374,11 @@ class Observer : public MatchFinder::MatchCallback {
              " << std::endl;";
       marker = "\"[obs] " + var + "=\"";
     } else {
-      // 对象等不可直接 <<：打印地址兜底，保证有观测输出
+      // 对象等不可直接 <<：地址兜底（规划要求“地址 + 类型名”，便于在海量日志里
+      // 识别对象身份），保证有观测输出。
       line = "std::cout << \"[obs] " + var + " (ptr)=\" << (const void*)&" +
-             var + " << std::endl;";
+             var + " << \" type=" + cStringLiteralBody(type) +
+             "\" << std::endl;";
       marker = "\"[obs] " + var + " (ptr)=\"";
     }
     // 插入点按来源分派：
@@ -455,14 +515,17 @@ class EngineConsumer : public ASTConsumer {
       mf_->addMatcher(
           functionDecl(hasOverloadedOperatorName("<<")).bind("op_shift"),
           &observer_);
-      if (!args_.var.empty()) {
-        // 按变量名：只匹配同名声明
-        mf_->addMatcher(varDecl(hasName(args_.var)).bind("target_var"),
-                        &observer_);
-      } else if (args_.line > 0) {
-        // 按位置：匹配引用（使用处）与声明（定义处），回调里按 (line,col) 过滤
+      if (args_.line > 0) {
+        // 有光标位置时以位置为准：匹配引用（使用处）与声明（定义处），回调里
+        // 按 (line,col) 过滤。插件同时传 --var 与 --position，且 --var 可能是
+        // 选区文本/整行文本——若按名字匹配，同名变量会被全文件注入、整行文本
+        // 又匹配为空。位置过滤才是"选区映射到 AST 节点"的正确语义。
         mf_->addMatcher(declRefExpr().bind("target_ref"), &observer_);
         mf_->addMatcher(varDecl().bind("target_var"), &observer_);
+      } else if (!args_.var.empty()) {
+        // 无位置（纯 --var）：只匹配同名声明
+        mf_->addMatcher(varDecl(hasName(args_.var)).bind("target_var"),
+                        &observer_);
       }
     }
   }
@@ -528,11 +591,36 @@ class EngineAction : public ASTFrontendAction {
       }
       edits_->push_back(e);
     }
+    // friend 函数定义：非 inline，追加到主文件 .cpp 末尾（规划 §4.1 拍板方案：
+    // 声明进类定义、定义放 .cpp）。插入点取“最后一个换行符之前”的行尾列，
+    // 不依赖“文件末尾空行”是否存在（VSCode applyEdit / splitlines 视图里
+    // 末尾换行后没有独立空行，按 N+1 行插入会越界）。
+    if (!col_.friendDefs.empty()) {
+      const FileID fid = SM.getMainFileID();
+      StringRef buf = SM.getBufferData(fid);
+      size_t end = buf.size();
+      if (end > 0 && buf[end - 1] == '\n') --end;
+      if (end > 0 && buf[end - 1] == '\r') --end;
+      SourceLocation at = SM.getLocForStartOfFile(fid).getLocWithOffset(
+          static_cast<int>(end));
+      if (at.isValid()) {
+        TextEdit e;
+        e.start.line = static_cast<int>(SM.getSpellingLineNumber(at));
+        e.start.col = static_cast<int>(SM.getSpellingColumnNumber(at));
+        e.end = e.start;
+        e.file = args_.file;
+        e.text = (end == 0 ? "" : "\n\n");
+        for (const std::string &def : col_.friendDefs) e.text += def + "\n";
+        edits_->push_back(e);
+      }
+    }
     // 整行模式（产品方案 §3.4：选中整行插入该行前）：--position 未落在任何
-    // 变量 token 上（无注入）且未指定 --var 时，在选中行行首插入一行位置
-    // 标记日志，缩进跟随原行；空行 / 该行已注入过则跳过。
+    // 变量 token 上（无注入）时，在选中行行首插入一行位置标记日志，缩进跟随
+    // 原行；空行 / 该行已注入过则跳过。这里不再要求 --var 为空——插件选中
+    // 整行时会把整行文本当 --var 传过来，按名字匹配必然为空；位置才是语义
+    // 依据，整行应走兜底而不是报 "no matching target found"。
     if (edits_->empty() && args_.action == Action::kInject &&
-        args_.line > 0 && args_.var.empty()) {
+        args_.line > 0) {
       const unsigned L = static_cast<unsigned>(args_.line);
       SourceLocation ls = SM.translateLineCol(SM.getMainFileID(), L, 1);
       if (ls.isValid()) {
@@ -887,11 +975,141 @@ CommandLineArguments sanitizeCompileArgs(const CommandLineArguments &args,
   return out;
 }
 
+// ---- 编译参数缺失降级（规划 §6.1）----
+// 查不到 compile_commands 条目时没有可靠编译参数，无法正确解析 AST；降级为
+// “仅插入模板日志 + 提示”，不中断操作（CLI 仍退出 0，插件仍可 applyEdit）：
+//   inject  --var：在目标行（--position 指定，否则首个含该标识符的行）之后插入
+//           标准 [obs] 模板日志（不做类型感知，统一用地址形式保证可编译）；
+//           无 --var：选中行行首插入行标记日志（整行兜底）。
+//   comment  文本降级：含 pengtest 标记的行逐行行首加 "// "。多行流式链的续行
+//           无法从文本识别（clang 才能给出完整语句范围），属已知局限。
+// 返回 true（即使没有产出 edit），由调用方转发 warn 提示。
+bool templateFallback(const CliArgs &args, std::vector<TextEdit> *edits,
+                      std::string *err) {
+  std::string data = readAllBytes(args.file);
+  if (data.empty()) {
+    if (err) *err = "cannot read: " + args.file;
+    return false;
+  }
+  // BOM 与 VSCode/applyEdit 的文本视图一致：行号/列号从 BOM 之后起算
+  if (data.size() >= 3 && (unsigned char)data[0] == 0xEF &&
+      (unsigned char)data[1] == 0xBB && (unsigned char)data[2] == 0xBF)
+    data = data.substr(3);
+
+  // 按 '\n' 切行（去掉行尾 '\r'，行号与编辑器一致）
+  std::vector<std::string> lines;
+  {
+    std::string cur;
+    for (char c : data) {
+      if (c == '\n') {
+        if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+        lines.push_back(cur);
+        cur.clear();
+      } else {
+        cur += c;
+      }
+    }
+    lines.push_back(cur);
+  }
+
+  if (args.action == Action::kComment) {
+    for (size_t i = 0; i < lines.size(); ++i) {
+      const std::string &ln = lines[i];
+      if (ln.find("pengtest") == std::string::npos) continue;
+      // 已注释的行跳过（幂等；与 --comment 的 "// " 标记一致）
+      size_t p = ln.find_first_not_of(" \t");
+      if (p != std::string::npos && ln[p] == '/' &&
+          p + 1 < ln.size() && ln[p + 1] == '/')
+        continue;
+      TextEdit e;
+      e.start.line = static_cast<int>(i + 1);
+      e.start.col = 1;
+      e.end = e.start;
+      e.text = "// ";
+      edits->push_back(e);
+    }
+    return true;
+  }
+  if (args.action != Action::kInject) return true;
+
+  const std::string &var = args.var;
+  int target = 0;  // 1-based 目标行
+  if (args.line > 0 && static_cast<size_t>(args.line) <= lines.size()) {
+    target = args.line;
+  } else if (!var.empty()) {
+    // 没有位置时：按标识符边界找首个含该变量的行（通常是声明行）
+    for (size_t i = 0; i < lines.size() && target == 0; ++i) {
+      const std::string &ln = lines[i];
+      size_t pos = 0;
+      while ((pos = ln.find(var, pos)) != std::string::npos) {
+        auto ident = [](char c) {
+          return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+        };
+        bool lb = pos == 0 || !ident(ln[pos - 1]);
+        bool rb = pos + var.size() >= ln.size() || !ident(ln[pos + var.size()]);
+        if (lb && rb) {
+          target = static_cast<int>(i + 1);
+          break;
+        }
+        pos += var.size();
+      }
+    }
+  }
+  if (target <= 0) {
+    if (err) *err = "no matching target found";
+    return false;
+  }
+
+  const std::string &tline = lines[static_cast<size_t>(target) - 1];
+  std::string indent;
+  for (char c : tline) {
+    if (c == ' ' || c == '\t') indent += c;
+    else break;
+  }
+  std::string log, marker;
+  if (!var.empty()) {
+    // 变量模板：没有 AST 就不知道类型能否 <<；为保证插入后仍可编译，统一用
+    // 地址形式（任何类型都成立），提示里说明这是未做 AST 解析的占位观测。
+    log = "std::cout << \"[obs] " + var + " (ptr)=\" << (const void*)&" + var +
+          " << std::endl;";
+    marker = "\"[obs] " + var + " (ptr)=\"";
+  } else {
+    log = "std::cout << \"[obs] line " + std::to_string(target) +
+          "\" << std::endl;";
+    marker = "\"[obs] line " + std::to_string(target) + "\"";
+  }
+  // 幂等：目标行前后两行内已有该 marker 则视为已注入
+  int lo = target - 1 < 1 ? 1 : target - 1;
+  int hi = target + 1 > static_cast<int>(lines.size())
+               ? static_cast<int>(lines.size())
+               : target + 1;
+  for (int i = lo; i <= hi; ++i) {
+    if (lines[static_cast<size_t>(i) - 1].find(marker) != std::string::npos)
+      return true;
+  }
+
+  TextEdit e;
+  e.start.line = target;
+  if (!var.empty()) {
+    // 插到目标行之后（声明/使用之后变量才在作用域内）；行尾列 = 字节长度 + 1
+    e.start.col = static_cast<int>(tline.size()) + 1;
+    e.text = "\n" + indent + log;
+  } else {
+    // 整行兜底：选中行行首（该行之前）插入一行标记日志
+    e.start.col = 1;
+    e.text = indent + log + "\n";
+  }
+  e.end = e.start;  // 纯插入：范围退化为点（必须在 col 赋值之后同步）
+  edits->push_back(e);
+  return true;
+}
+
 }  // namespace
 
 bool runClangEngine(const CliArgs &args, const std::string &compileJson,
                     const std::string &exePath,
-                    std::vector<TextEdit> *edits, std::string *err) {
+                    std::vector<TextEdit> *edits, std::string *err,
+                    std::string *warn) {
   if (args.file.empty()) {
     if (err) *err = "missing --file";
     return false;
@@ -905,8 +1123,14 @@ bool runClangEngine(const CliArgs &args, const std::string &compileJson,
   }
   std::string entry;
   if (!idx.readEntry(args.file, &entry)) {
-    if (err) *err = "file not found in compile_commands: " + args.file;
-    return false;
+    // 规划 §6.1：编译参数缺失不再报错退出，降级为模板日志并提示（不中断操作）
+    if (warn) {
+      *warn = "file not found in compile_commands: " + args.file +
+              "；已降级为模板日志（未做 AST 解析）";
+      if (args.friend_ && args.action == Action::kInject)
+        *warn += "；--friend 需要 AST，已忽略";
+    }
+    return templateFallback(args, edits, err);
   }
   // ---- PCH 决策 ----
   // 缓存命中 → 本次即加速（-Xclang -include-pch，对 cl/gcc 驱动模式通用）；
