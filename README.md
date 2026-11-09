@@ -12,26 +12,31 @@
 1. **`--comment`**：把源码中带 `pengtest` 标记的日志语句（函数调用 + `cout/cerr/clog` 流）自动注释掉——是注释不是删除，可逆。
 2. **`--inject`**：对选中变量注入一行观测日志，自动生成类型感知的打印表达式。
 
-关键设计：**CLI 只做纯分析、输出 JSON TextEdit，不回写文件**。要不要落地由调用方（VSCode 插件薄壳 / 脚本）用 `applyEdit` 决定——分析工具与编辑器解耦。
+关键设计：**CLI 默认只做纯分析、输出 JSON TextEdit，不回写文件**。要不要落地由调用方（VSCode 插件薄壳 / 脚本）用 `applyEdit` 决定——分析工具与编辑器解耦。显式传 `--write` 时 CLI 才直接改写目标文件（含跨文件 friend 头文件），语义与 applyEdit 一致。
 
 ## 最新 CLI
 
 ```
 用法:
   logcommenter --inject --file <path> --var <name> [--position line:col]
-      --compile-commands <compile_commands.json>
+      --compile-commands <compile_commands.json> [--friend]
   logcommenter --inject --file <path> --position <line:col>
-      --compile-commands <compile_commands.json>
-  logcommenter --comment --file <path>
-      --compile-commands <compile_commands.json>
+      --compile-commands <compile_commands.json> [--friend]
+  logcommenter --comment --file <path> --compile-commands <compile_commands.json>
 
 选项:
-  --inject / --comment        动作：注入观测日志 / 注释标记(pengtest)日志
+  --inject / --comment        动作：注入观测日志 / 注释标记日志
   --file PATH                 待处理源文件
-  --var NAME                  注入：按变量名定位观测对象
-  --position LINE:COL         注入：按光标位置定位（1-based，命中声明处或引用处）
+  --var NAME                  注入：要观测的变量名
+  --position LINE:COL         注入：光标位置（1-based，可选，命中声明处或引用处）
+  --friend                    注入：对象不可 << 且类型为用户可改类时，注入
+                              inline friend operator<<（改类所在头文件，
+                              需用户显式确认），观测输出改为流式
+  --write                     把产出的 edit 直接改写到目标文件（含跨文件
+                              friend 头文件）；stdout 仍输出 JSON 便于
+                              校验，写失败时退出码 1
   --compile-commands PATH     compile_commands.json 路径
-  --help / -h                 帮助
+  --help                      帮助
 ```
 
 `--inject` 用 **`--var`（按名字）** 或 **`--position`（按光标位置）** 二选一定位。输出示例：
@@ -50,7 +55,7 @@ TextEdit 语义：`start == end` 为纯插入，文本插到 `(line,col)` 字符
 - **对象 / 复杂类型**（不可直接 `<<`）：自动兜底打印地址 `(const void*)&var`，保证有观测输出。
 - **`--position` 命中声明处或引用处**：光标落在变量 token 上即可，不必输入名字——VSCode 右键"加观测日志"的核心场景。
 - **插入位置与幂等**：观测语句插在声明语句（含 `;`）之后；`for/if/switch` 头部声明的观测插到循环/分支体开头；同一变量重复注入自动跳过，不叠加。
-- **范围**：当前仅支持函数局部变量；全局/类成员观测（friend 注入）与形参观测见演进方向。
+- **范围**：支持函数局部变量（声明后插入）与函数形参（函数体开头插入）；全局变量/类静态成员仅在 `--position` 命中引用处时支持（插到引用所在函数体开头），纯 `--var` 无法定位全局观测点；对象不可 `<<` 且为用户可改的非模板类时，`--friend` 可注入 inline `friend operator<<`（MVP 打印类型名 + 地址，暂未打印私有成员）。
 
 ## 架构
 
@@ -139,7 +144,7 @@ LOGC_DISABLE_SSL=1 bash tools/fetch_llvm.sh
 
 ## 测试 / CI
 
-- **单测**（`logcommenter_tests`）：23 cases / 74 checks，覆盖格式表、TextEdit、偏移索引、CLI 参数。
+- **单测**（`logcommenter_tests`）：74 cases / 192 checks，覆盖格式表、TextEdit、偏移索引、CLI 参数、edit 落盘（file_apply）与 PCH 指令层 preamble。
 - **GitHub Actions**（`.github/workflows/ci.yml`）：
   - `core` job：纯逻辑，零 Clang 依赖，三平台（Ubuntu/Windows/macOS）快、必绿；
   - `ast` job：下载预编译 LLVM 静态工具链（release）+ `find_package` 构建 + E2E smoke——覆盖 comment / inject(var) / inject(position) / 注释/注入各自的多行与幂等语义，并包含"应用 TextEdit 后源码仍可解析 + 重复注入幂等"的落盘校验（`tools/e2e_apply_check.py`）。
@@ -153,6 +158,6 @@ LOGC_DISABLE_SSL=1 bash tools/fetch_llvm.sh
 
 ## 演进方向
 
-- **VSCode 插件薄壳**：右键"加观测日志" → `child_process` 调 CLI → `applyEdit`（CLI 的 JSON TextEdit 输出即为对接协议）。
-- **私有成员观测**：已拍板 **friend 注入**方案（声明进头文件、定义放 .cpp 非 inline，不改类布局/ABI）。
-- **对象成员级观测**：从"打印地址"升级为调用 `operator<<` / `toString()` 的语义打印。
+- **VSCode 插件**：已实现并发布（`vscode/`）：右键"加观测日志"/"注释标记日志" → `child_process` 调 CLI → `applyEdit`（CLI 的 JSON TextEdit 输出即为对接协议）。
+- **私有成员观测**：`--friend` 已有 MVP（类内 inline `friend operator<<`，打印类型名 + 地址）；按成员逐个打印仍待办。
+- **容器/成员级语义观测**：在已有 `operator<<` 实查与格式表基础上，补齐容器与成员字段的内容打印（当前无 `operator<<` 的对象回退地址）。

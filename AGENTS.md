@@ -39,10 +39,13 @@
 - compile_commands 用偏移索引（`.logc-idx`）seek+read 单条取参，绝不整载 1GB；
   索引按 mtime 失效。
 - 幂等（产品要求）：`--comment` 天然跳过已注释语句；`--inject` 不得重复注入——
-  单次调用内已按 canonical decl 去重；跨调用检测已有 `[obs]` 行**尚未实现**，属产品待办。
+  单次调用内已按 canonical decl 去重；**跨调用**由 `alreadyObserved()`
+  （`src/clang/engine_clang.cpp`，插入点后至多两行内匹配该变量的 `[obs]` 标记）
+  跳过已注入语句；回环幂等由 `tools/e2e_apply_check.py` 与 `tools/e2e_bgroup.py`
+  的 E2E 覆盖（应用 edit 后重新注入不产生新 edit）。
 - 对象观测优先级：有 `operator<<` 直接流式；用户可改类走 friend 注入（需用户显式确认，
   改头文件有副作用）；第三方/系统类型回退地址打印。
-- 方案文档中 "LLVM 21.1.4" 已过时：仓库现用 LLVM/Clang 23.1.3（预编译静态工具链，find_package 消费）。
+- 两份规划文档（本地 md 与飞书）均已同步为 LLVM/Clang 23.1.3（预编译静态工具链，find_package 消费）。
 
 ## clang resource-dir（核心坑，曾造成连续十余次 CI 失败）
 

@@ -70,14 +70,14 @@ flowchart LR
 CLI 统一承担注入与注释两类动作，以 JSON 输出 TextEdit，供插件或命令行消费。
 
 ```bash
-logcommenter --inject --file src/foo.cpp --position 42:17 --var name --compile-dir out/build/VS
+logcommenter --inject --file src/foo.cpp --position 42:17 --var name --compile-commands out/build/VS/compile_commands.json
 ```
 
 ```json
 {
   "file": "src/foo.cpp",
   "edits": [
-    { "range": { "start": {"line": 42, "col": 0}, "end": {"line": 42, "col": 0} },
+    { "range": { "start": {"line": 42, "col": 1}, "end": {"line": 42, "col": 1} },
       "text": "    std::cout << \"[obs] name=\" << name << std::endl;\n" }
   ]
 }
